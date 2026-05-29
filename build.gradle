@@ -1,0 +1,21 @@
+// Root build — conventions only. Module-specific dependencies live in each subproject.
+subprojects {
+    apply plugin: 'java'
+
+    group = 'com.cobain'
+    version = '1.0-SNAPSHOT'
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(Integer.parseInt(libs.versions.java.get()))
+        }
+    }
+
+    repositories {
+        mavenCentral()
+    }
+
+    test {
+        useJUnitPlatform()
+    }
+}

@@ -1,0 +1,5 @@
+// Codec module: binary layout, flyweight, FIX parsing, IPC framing constants.
+// Agrona-only. Must NOT pull in aeron-cluster.
+dependencies {
+    implementation libs.agrona
+}

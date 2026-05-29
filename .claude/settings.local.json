@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew compileJava *)",
+      "Bash(./gradlew dependencies *)",
+      "Bash(java -version)",
+      "Bash(javac -version)",
+      "Bash(./gradlew clean *)",
+      "Bash(./gradlew :algo-sor:dependencies --configuration compileClasspath --offline)",
+      "Bash(./gradlew :oms-codec:dependencies --configuration compileClasspath --offline)",
+      "Bash(awk '/doWork\\\\\\(\\\\\\)|onFragment\\\\\\(/{found=1} found && /^    \\\\}/{found=0; next} found && /new /' algo-sor/src/main/java/com/cobain/oms/algoagent/AlgoSorAgent.java)",
+      "Bash(./gradlew :algo-sor:dependencies --configuration compileClasspath)",
+      "Bash(export CLAUDE_CODE_TMPDIR=/tmp)",
+      "Bash(awk '/public byte validate\\\\\\(/,/^    \\\\}/' /Users/abhishekkalyanaraman/Code/MarketOMS/oms-core/src/main/java/com/cobain/oms/core/ChildOrderIntentValidator.java)"
+    ]
+  }
+}

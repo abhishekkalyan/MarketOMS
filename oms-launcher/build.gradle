@@ -1,0 +1,29 @@
+// Launcher module: wires all components and starts the process.
+plugins {
+    id 'application'
+}
+
+dependencies {
+    implementation project(':oms-codec')
+    implementation project(':oms-core')
+    implementation project(':algo-sor')
+    implementation libs.agrona
+    implementation libs.aeron.client
+    implementation libs.aeron.driver
+    implementation libs.aeron.cluster
+    implementation libs.aeron.archive
+    implementation libs.slf4j.api
+    runtimeOnly    libs.logback
+}
+
+application {
+    mainClass = 'com.cobain.oms.launcher.OmsLauncher'
+    applicationDefaultJvmArgs = [
+        '--add-opens', 'java.base/sun.nio.ch=ALL-UNNAMED',
+        '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
+        '-XX:+UseG1GC',
+        '-XX:MaxGCPauseMillis=10',
+        '-XX:+AlwaysPreTouch',
+        '-XX:+DisableExplicitGC',
+    ]
+}

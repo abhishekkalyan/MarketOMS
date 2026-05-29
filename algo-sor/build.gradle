@@ -1,0 +1,10 @@
+// Algo and SOR module: execution algorithms and IPC agent. NO dependency on oms-core.
+dependencies {
+    implementation project(':oms-codec')
+    implementation libs.agrona
+    implementation libs.aeron.client
+    implementation libs.aeron.driver
+    implementation libs.aeron.cluster
+    implementation libs.slf4j.api
+    runtimeOnly    libs.logback
+}

@@ -1,0 +1,19 @@
+[versions]
+agrona        = "2.0.1"
+aeron         = "1.47.0"
+slf4j         = "2.0.13"
+logback       = "1.5.6"
+junit-jupiter = "5.11.4"
+java          = "17"
+
+[libraries]
+agrona        = { module = "org.agrona:agrona",         version.ref = "agrona" }
+aeron-client  = { module = "io.aeron:aeron-client",     version.ref = "aeron" }
+aeron-driver  = { module = "io.aeron:aeron-driver",     version.ref = "aeron" }
+aeron-cluster = { module = "io.aeron:aeron-cluster",    version.ref = "aeron" }
+aeron-archive = { module = "io.aeron:aeron-archive",    version.ref = "aeron" }
+slf4j-api     = { module = "org.slf4j:slf4j-api",       version.ref = "slf4j" }
+logback       = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
+junit-bom     = { module = "org.junit:junit-bom",       version.ref = "junit-jupiter" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-launcher = { module = "org.junit.platform:junit-platform-launcher" }
