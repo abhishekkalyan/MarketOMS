@@ -18,4 +18,10 @@ subprojects {
     test {
         useJUnitPlatform()
     }
+
+    tasks.named('build') {
+        doLast {
+            println "[${project.name}] build OK"
+        }
+    }
 }
