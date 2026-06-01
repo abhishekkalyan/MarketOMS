@@ -210,7 +210,7 @@ Use the provided shell scripts — not `./gradlew run`. The scripts handle build
 ./run-local.sh
 ```
 
-Builds both modules, starts OmsNode, waits for the MediaDriver to be ready, then starts AlgoSorAgent. Ctrl-C shuts both down cleanly.
+Builds both modules, starts OmsNode, waits for the MediaDriver to be ready (polls for `cnc.dat` using `find`, which works on both Linux and macOS), then starts AlgoSorAgent. Ctrl-C shuts both down cleanly.
 
 ```
 Building all modules...
@@ -306,11 +306,13 @@ Three-node example:
 
 This script:
 1. Builds all modules via Gradle
-2. Deletes stale Aeron and archive directories
-3. Starts `OmsNode` (node 0) and waits for its MediaDriver to be ready
+2. Deletes stale Aeron and archive directories (`OMS_ARCHIVE_DELETE_ON_START=true` is set automatically)
+3. Starts `OmsNode` (node 0) and waits up to 60 s for its MediaDriver to be ready
 4. Starts `AlgoSorAgent` and waits 3 seconds for it to connect
-5. Runs the harness scenarios
-6. Prints a pass/fail summary and exits 0 on full pass
+5. Runs the harness binary in the foreground, capturing its PID
+6. Prints a pass/fail summary, exits 0 on full pass, and kills OmsNode + AlgoSorAgent on exit
+
+All three process PIDs (OmsNode, AlgoSorAgent, harness) are tracked explicitly. On exit — whether normal, Ctrl-C, or error — the cleanup trap kills each by PID and waits only on those specific PIDs. No stale processes are left running after the script exits.
 
 Expected output on success:
 ```
@@ -349,6 +351,8 @@ ALL SCENARIOS PASSED
 | `HARNESS_TIMEOUT_MS` | `8000` | Per-scenario wait timeout in milliseconds |
 
 ### Running against a remote node
+
+`HARNESS_CLUSTER_INGRESS` must use `nodeId=host:port` format (Aeron Cluster requirement — bare `host:port` is rejected):
 
 ```bash
 HARNESS_CLUSTER_INGRESS="0=10.0.0.5:9000" ./run-harness.sh
