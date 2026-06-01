@@ -1,61 +1,97 @@
-## Mandatory: Keep This File Current
+# Mandatory Behaviour for Every Task
 
-After completing **any** task that changes the system design, architecture, or
-module structure, you must update this file before closing the task. This is
-not optional and is not a separate follow-up task — it is part of the definition
-of done for every change.
+These rules apply to every task without exception.
+A task is not complete until all four rules are satisfied.
 
-### What triggers an update
+---
 
-Update this file when any of the following occur:
+## Rule 1 — Check Design Before Coding
 
-- A new module is added or an existing module is removed
-- A dependency between modules is added, removed, or redirected
-- An Aeron IPC stream is added, removed, or changes direction
-- A new message type is added to the wire protocol
-- A class is moved between modules
-- A new component is introduced (e.g. a new Agent, a new Registry, a new Validator)
-- A state machine state or transition is added or modified
-- The binary layout of any flyweight changes (new field, offset change, size change)
-- The build steps change (new Gradle task, new boundary check, new JVM arg)
-- A constraint is relaxed or tightened (e.g. a new zero-allocation rule, a new
-  module boundary enforcement check)
+Before writing, editing, or deleting any Java source file:
 
-### What to update
+1. Read `DESIGN.md` Section 2 (Core Design Principles)
+2. Read the Component Contract in Section 4 for every class you intend to touch
+3. Work through the Design Analysis Checklist (Section 12) question by question
+4. If any checklist answer is NO, stop and explain the conflict before proceeding
 
-When a trigger above applies, update the relevant section(s) of this file:
+Do not skip this even for "small" changes. A one-line change to
+`ChildOrderRegistry.createChild()` can violate the golden-source invariant.
+A new import in `algo-sor` can silently break the module boundary.
 
-- **Module map** — reflect any added, removed, or renamed modules
-- **Component interaction diagram** — reflect any new or changed IPC channels,
-  message types, or component relationships
-- **Aeron IPC channel map** — update stream IDs, directions, and content descriptions
-- **Order state model diagram** — update if states or transitions changed
-- **Binary layout table** — update if any flyweight field was added, moved, or resized
-- **Build steps** — update if the build sequence, boundary checks, or JVM args changed
-- **Common build failures table** — add any new failure mode encountered during the task
+---
 
-### Format rules
+## Rule 2 — Update DESIGN.md After Every Change
 
-- Keep diagrams as ASCII — no external image references
-- Keep the IPC channel map as a Markdown table
-- Keep the binary layout as a Markdown table with Offset, Size, Type, Field, and
-  Semantics columns
-- Do not summarise changes in prose where a table or diagram is already present —
-  update the artefact directly
+After completing any task that changes the system, update `DESIGN.md` before
+reporting done. This is part of the definition of done, not a follow-up task.
 
-### How to do it
+### What triggers a DESIGN.md update
 
-At the end of every task, before reporting completion, run this self-check:
+| Trigger | DESIGN.md section(s) to update |
+|---------|--------------------------------|
+| New module added or removed | 1, 3.1, 3.3 |
+| Module dependency added, removed, or changed | 3.1, 3.2 |
+| Aeron IPC stream added, removed, or direction changed | 3.2 |
+| New message type in `ClusterMessageType` | 3.2, 6, Glossary |
+| Class moved between modules | 3.1, 3.3, 4 |
+| New component introduced | 3.3, 4, 11, Glossary |
+| `OrderLayout` field added, moved, or resized | 7.1 |
+| `ChildOrderIntentFlyweight` field changed | 7.2 |
+| State byte constant added or changed | 6.1, 6.2, 6.3, Glossary |
+| Transition added or removed | 6.2, 6.3 |
+| `registerTransitions()` call changed | 6.2, 9 |
+| Snapshot format changed | 9 |
+| New environment variable in `OmsNode` | 9 footnote |
+| Build steps changed | 3.1 boundary check commands |
+| New design decision made | 11 |
 
-1. Read through the list of triggers above
-2. For each trigger that applies to the work just completed, identify the
-   corresponding section in this file
-3. Update that section to reflect the current state of the system
-4. If a trigger applies but no corresponding section exists, add a new section
+### How to update
 
-Do not add a change log or "last updated" timestamp — keep the file describing
-the current state only, not the history of how it got there. Git history
-serves that purpose.
+1. Work through the trigger table above for everything changed in this task
+2. Edit the relevant DESIGN.md section directly — update tables, diagrams,
+   and constant values in-place
+3. Do not add a changelog or "what changed" paragraph — DESIGN.md describes
+   current state only; git history is the changelog
+4. After updating, re-run all DESIGN.md Step 3 verification commands:
+   - All 13 section grep checks still pass
+   - Byte constants still match source (`grep "public static final byte" ...`)
+   - Stream IDs still match source
+   - `wc -l DESIGN.md` is still within 600–1200 lines
+   - No placeholder text found
+
+---
+
+## Rule 3 — Enforce Principles on Every Change
+
+The principles in `DESIGN.md` Section 2 are invariants, not guidelines.
+Before committing any change, verify each applicable principle:
+
+| Principle | Verification command |
+|-----------|---------------------|
+| Zero-GC on hot path | `grep -n " new " [changed file] \| grep -v "//\|test\|Test"` — no hits in hot-path methods |
+| Single-threaded execution | `grep -n "synchronized\|AtomicReference\|ReentrantLock" [changed file]` — no hits |
+| `oms-core` golden source | `grep -rn "ChildOrderRegistry\|OrderBook" algo-sor/src/` — no hits |
+| `algo-sor` intent-only | `grep -rn "FIXMessageEncoder" algo-sor/src/` — no hits |
+| `ChildOrderIntentValidator` before `createChild()` | Read `OmsClusteredService.onChildOrderIntent()` — validator called first |
+| Module boundaries | `./gradlew :algo-sor:dependencies --configuration compileClasspath \| grep oms-core` — no output |
+| Fixed-point prices | `grep -n "double\|float\|BigDecimal" [changed file]` — no hits |
+| Raft-replicated mutations | All `OrderBook`/`ChildOrderRegistry` writes inside `onSessionMessage()` or `onLoadSnapshot()` |
+
+---
+
+## Rule 4 — Self-Check Before Reporting Done
+
+Run this checklist internally before every task completion report:
+
+- [ ] `./gradlew clean build` passes with zero compilation errors
+- [ ] `:algo-sor:dependencies | grep oms-core` returns no output
+- [ ] `:oms-codec:dependencies | grep aeron-cluster` returns no output
+- [ ] No `new` expression added to any hot-path method
+      (`onSessionMessage`, `onFragment`, `validateNewOrder`, `validate`, `createChild`)
+- [ ] `DESIGN.md` updated for every trigger in Rule 2 that applies to this task
+- [ ] All DESIGN.md verification commands pass after the update
+
+---
 
 # Engineering Rules
 - Strictly Zero-GC in core packages.
@@ -67,32 +103,33 @@ serves that purpose.
 
 # Module Structure
 
-Gradle multi-module monorepo. Four bounded modules + launcher:
+See `DESIGN.md` Section 3 for the authoritative module dependency graph,
+compile-time boundary rules, and runtime Aeron IPC channel map.
 
-```
-market-oms/
-  oms-codec/      codec/, fix/         — shared binary contract, Agrona only (no Aeron)
-  oms-core/       statemachine/, validation/, cluster/, common/
-  algo-sor/       algo/, algoagent/
-  oms-launcher/   launcher/
-```
+Summary (do not use for precise values — use DESIGN.md Section 3):
+- `oms-codec` — binary contract, Agrona only, no Aeron Cluster
+- `oms-core`  — golden source for all order state, Aeron Cluster
+- `algo-sor`  — computation engine only, no dependency on `oms-core`
+- `oms-launcher` — wiring only
+- `oms-harness`  — black-box test client, no dependency on `oms-core`
 
-**Hard boundary:** `algo-sor` must NOT depend on `oms-core`. The only shared module is `oms-codec`. All inter-module communication is via Aeron IPC at runtime.
+Hard boundary: `algo-sor` must NOT depend on `oms-core`. Enforced by:
+  `./gradlew :algo-sor:dependencies --configuration compileClasspath | grep oms-core`
+  → must return no output on every build.
 
 **No Spring, no CDI, no reflection.** All wiring is explicit constructor injection in `OmsLauncher`.
 
-**Java 21 only.** `sealed` interfaces or `records` are permitted only where they introduce no hot-path allocation.
+**Java 17.** `sealed` interfaces or `records` are permitted only where they introduce no hot-path allocation.
 
 ---
 
 # Aeron IPC Channel Map
 
-| Stream ID | Direction              | Purpose                                      |
-|-----------|------------------------|----------------------------------------------|
-| 10        | oms-core → algo-sor    | Accepted parent orders                       |
-| 12        | algo-sor → oms-core    | `ChildOrderIntent` routing instructions      |
+See `DESIGN.md` Section 3.2 — authoritative source for all stream IDs,
+directions, publishers, subscribers, and payload sizes.
 
-Stream 11 (direct child NOS from algo-sor to FIX bridge) is **removed**. `algo-sor` never writes to the FIX bridge.
+Do not add, remove, or renumber a stream without updating DESIGN.md Section 3.2
+first and re-running the stream ID verification command (DESIGN.md Step 3, Check 3).
 
 ---
 
@@ -108,7 +145,7 @@ Stream 11 (direct child NOS from algo-sor to FIX bridge) is **removed**. `algo-s
 3. Creates child in `ChildOrderRegistry` (the only place child order records are born)
 4. Links child → parent in `OrderBook`
 5. Transitions parent state via `OrderStateMachine`
-6. Dispatches child NOS to FIX bridge via `AeronEgressPublisher`
+6. Dispatches child NOS to FIX bridge via `FIXMessageEncoder`
 
 All Aeron Cluster replication, snapshotting, and recovery operates only on `oms-core` state.
 
@@ -127,53 +164,32 @@ oms-core ──[parent order]──► algo-sor ──[ChildOrderIntent]──�
 
 # Order State Model
 
-Base states (`OrderState.java`, byte constants 0–7): `NEW`, `PENDING_NEW`, `PARTIALLY_FILLED`, `FILLED`, `CANCELED`, `PENDING_CANCEL`, `REPLACED`, `REJECTED`.
+See `DESIGN.md` Section 6 — authoritative source for all state byte values,
+the complete legal transition table, and state invariants.
 
-Parent-only extension (`ParentOrderState.java`, values 10+):
-- `ROUTING = 10` — parent accepted, one or more children dispatched, awaiting fills.
-
-`OrderState.NUM_STATES = 16` (was 8) to accommodate parent-only states at index 10. `ParentOrderState.registerTransitions()` must be called in `OmsLauncher.main()` before any `AgentRunner` is started.
-
-ROUTING lifecycle:
-- `NEW → ROUTING` — first `ChildOrderIntent` accepted
-- `ROUTING → PARTIALLY_FILLED` — first child fill aggregated
-- `ROUTING → CANCELED` — all children canceled before any fill
-- `ROUTING → FILLED` — all qty filled via children
-
----
-
-# Binary Layout — `OrderFields.java`
-
-Block length: **128 bytes** (fixed, never increase).
-
-Reserved region (offsets 112–127) is consumed by parent-child linkage fields:
-
-| Offset | Size | Type | Constant                          | Semantics                                                      |
-|--------|------|------|-----------------------------------|----------------------------------------------------------------|
-| 112    | 4    | int  | `OFFSET_CHILD_COUNT`              | Parent: number of live children. 0 on child orders.           |
-| 116    | 4    | int  | `OFFSET_NEXT_SIBLING_SLOT`        | Child: slot index of next sibling. 0 = end of list.           |
-| 120    | 8    | long | `OFFSET_PARENT_OR_FIRST_CHILD_ID` | Parent: first child orderId. Child: parent orderId.           |
-
-Static assert: `OFFSET_PARENT_OR_FIRST_CHILD_ID + Long.BYTES == BLOCK_LENGTH`.
+Key operational facts (do not use for precise values — use DESIGN.md Section 6):
+- Base states: `PENDING_NEW(0)` through `EXPIRED(9)` in `com.cobain.oms.model.OrderState`
+- Parent-only extension: `ROUTING(10)` in `com.cobain.oms.core.ParentOrderState`
+- `NUM_STATES = 16` in `OrderState`
+- `ParentOrderState.registerTransitions()` must be called in both `OmsLauncher.main()`
+  and `OmsClusteredService.onStart()` before any order processing begins —
+  without this, ROUTING transitions return `INVALID_TRANSITION`
+- Terminal check: `OrderState.isTerminal(state)` = `state >= FILLED` (>= 6)
 
 ---
 
-# Binary Layout — `ChildOrderIntentFlyweight.java`
+# Binary Layout
 
-56 bytes total (fits in one cache line). Package: `com.sellside.oms.codec`.
+See `DESIGN.md` Section 7 — authoritative source for:
+- Complete `OrderLayout` 128-byte field table with all offsets and types
+- Complete `ChildOrderIntentFlyweight` 56-byte field table
+- Price encoding (`PRICE_MULTIPLIER = 10_000L`) with worked example
+- Symbol encoding algorithm (`OrderFlyweight.encodeSymbol()`)
+- FIX Binary inbound format (76-byte `FIXMessageDecoder` layout)
 
-| Offset | Size | Type  | Field                 |
-|--------|------|-------|-----------------------|
-| 0      | 8    | long  | parentOrderId         |
-| 8      | 8    | long  | parentClOrdId         |
-| 16     | 8    | long  | sliceQty              |
-| 24     | 8    | long  | limitPrice (fixed-pt) |
-| 32     | 4    | int   | venueId               |
-| 36     | 1    | byte  | algoType (1=SOR, 2=ICEBERG, 3=TWAP) |
-| 37     | 1    | byte  | sliceIndex            |
-| 38     | 2    | short | _pad                  |
-| 40     | 8    | long  | intentTimestampNanos  |
-| 48     | 8    | long  | _reserved             |
+Key constraint: `OrderLayout.BLOCK_LENGTH = 128` is fixed. Never increase it.
+The static assert `OFFSET_PARENT_OR_FIRST_CHILD_ID + Long.BYTES == BLOCK_LENGTH`
+enforces this at class-load time.
 
 ---
 
@@ -286,9 +302,9 @@ Multi-node: pipe-separate (`|`) entries, one per node, with actual host IPs.
 ```
 Total: 129 bytes (`ClusterMessageType.IPC_MESSAGE_SIZE`).
 
-`FIXMessageDecoder` is used **only** for the FIX bridge → oms-core IPC channel (stream 10 / FIX engine path), where the upstream FIX engine sends pre-parsed FIX Binary format. It must never be used to decode cluster ingress messages.
+`FIXMessageDecoder` is used **only** for the FIX bridge → oms-core IPC channel (stream 11 / FIX engine path), where the upstream FIX engine sends pre-parsed FIX Binary format. It must never be used to decode cluster ingress messages.
 
-`OmsClusteredService.onSessionMessage` dispatches on `ClusterMessageType` constants and reads payload fields via `OrderLayout` offsets directly from the `DirectBuffer`. `FIXMessageDecoder` is still used inside `handleExecReport` (for FIX bridge exec reports arriving via the legacy IPC path).
+`OmsClusteredService.onSessionMessage` dispatches on `ClusterMessageType` constants and reads payload fields via `OrderLayout` offsets directly from the `DirectBuffer`. `FIXMessageDecoder` is used inside `handleExecReport` (for FIX bridge exec reports arriving via the IPC path).
 
 **Egress responses** use the same framing. `sendEgressExecReport` writes `ClusterMessageType` + `OrderLayout` into a pre-allocated `egressBuffer` and delivers it via `ClientSession.offer()` using the cluster's `idleStrategy`.
 
@@ -305,6 +321,3 @@ All modules that use Agrona (including `oms-harness`) must include all three fla
 ```
 
 Omitting `jdk.internal.misc` causes `IllegalAccessError` from `UnsafeApi` at startup even if the other two are present. Set in each module's `build.gradle` under `application { applicationDefaultJvmArgs = [...] }`.
-
----
-
