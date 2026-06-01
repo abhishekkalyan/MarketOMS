@@ -29,19 +29,20 @@ LAUNCHER_LOG="/tmp/oms-launcher-harness.log"
 
 OMS_NODE_PID=""
 OMS_LAUNCHER_PID=""
+HARNESS_PID=""
 HARNESS_EXIT=1
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 cleanup() {
     echo ""
     echo "Stopping OMS stack..."
-    if [[ -n "${OMS_LAUNCHER_PID}" ]]; then
-        kill "${OMS_LAUNCHER_PID}" 2>/dev/null || true
-    fi
-    if [[ -n "${OMS_NODE_PID}" ]]; then
-        kill "${OMS_NODE_PID}" 2>/dev/null || true
-    fi
-    wait 2>/dev/null || true
+    [[ -n "${HARNESS_PID}"   ]] && kill "${HARNESS_PID}"   2>/dev/null || true
+    [[ -n "${OMS_LAUNCHER_PID}" ]] && kill "${OMS_LAUNCHER_PID}" 2>/dev/null || true
+    [[ -n "${OMS_NODE_PID}"  ]] && kill "${OMS_NODE_PID}"  2>/dev/null || true
+    # Wait only on the PIDs we started — avoids hanging on unrelated background jobs.
+    for pid in "${HARNESS_PID}" "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
+        [[ -n "${pid}" ]] && wait "${pid}" 2>/dev/null || true
+    done
     echo "Stack stopped. Harness exit code: ${HARNESS_EXIT}"
 }
 trap cleanup EXIT INT TERM
@@ -91,15 +92,19 @@ sleep 3
 echo ""
 echo "Running test harness..."
 echo "================================================================"
-if oms-harness/build/install/oms-harness/bin/oms-harness; then
-    HARNESS_EXIT=0
+oms-harness/build/install/oms-harness/bin/oms-harness &
+HARNESS_PID=$!
+wait "${HARNESS_PID}"
+HARNESS_EXIT=$?
+HARNESS_PID=""   # already exited — no need to kill in cleanup
+
+if [[ ${HARNESS_EXIT} -eq 0 ]]; then
     echo "================================================================"
     echo "ALL SCENARIOS PASSED"
 else
-    HARNESS_EXIT=1
     echo "================================================================"
     echo "ONE OR MORE SCENARIOS FAILED — check harness output above"
-    echo "Node log   : ${NODE_LOG}"
+    echo "Node log    : ${NODE_LOG}"
     echo "Launcher log: ${LAUNCHER_LOG}"
 fi
 
