@@ -23,7 +23,7 @@ export OMS_ARCHIVE_DIR="/tmp/oms-archive-0"
 export OMS_LAUNCHER_AERON_DIR="/tmp/oms-aeron-launcher"
 export OMS_MAX_NOTIONAL=10000000
 export OMS_SYMBOLS="AAPL,MSFT,GOOG,AMZN"
-export OMS_CLUSTER_MEMBERS="0,localhost:9000:9001:9002:0:9003"
+export OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010"
 
 NODE_LOG="/tmp/oms-node.log"
 LAUNCHER_LOG="/tmp/oms-launcher.log"
@@ -65,8 +65,7 @@ echo "  OmsNode PID: ${OMS_NODE_PID}"
 # ── 4. Wait for OmsNode MediaDriver to be ready ───────────────────────────────
 echo -n "  Waiting for Aeron MediaDriver"
 WAIT_SECONDS=0
-until [[ -S "${OMS_AERON_DIR}/aeron-$(id -u)/cnc.dat" ]] || \
-      ls "${OMS_AERON_DIR}"/aeron-*/cnc.dat 2>/dev/null | grep -q cnc.dat; do
+until find "${OMS_AERON_DIR}" -name "cnc.dat" 2>/dev/null | grep -q cnc.dat; do
     sleep 1
     WAIT_SECONDS=$((WAIT_SECONDS + 1))
     echo -n "."

@@ -14,7 +14,7 @@ export OMS_SYMBOLS="${OMS_SYMBOLS:-AAPL,MSFT,GOOG,AMZN}"
 
 # Single-node local cluster: only node 0, all ports on localhost.
 # Format: nodeId,hostname:clientPort:memberPort:logPort:transferPort:archivePort
-export OMS_CLUSTER_MEMBERS="${OMS_CLUSTER_MEMBERS:-0,localhost:9000:9001:9002:0:9003}"
+export OMS_CLUSTER_MEMBERS="${OMS_CLUSTER_MEMBERS:-0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010}"
 
 echo "================================================================"
 echo "  OMS Node ${OMS_NODE_ID}"

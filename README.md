@@ -200,29 +200,59 @@ Omitting `jdk.internal.misc` causes `IllegalAccessError` from `UnsafeApi` at sta
 
 ---
 
-## Running a Single Node
+## Running Locally
 
-`OmsNode` is the entry point for `oms-core`. All configuration is via environment variables — no config files, no command-line arg parsing.
+Use the provided shell scripts — not `./gradlew run`. The scripts handle building, directory setup, startup ordering, and clean shutdown. `./gradlew run` doesn't coordinate the two-process startup and makes logs harder to work with.
+
+### Full stack (OmsNode + AlgoSorAgent)
 
 ```bash
-export OMS_NODE_ID=0
-export OMS_AERON_DIR=/tmp/oms-aeron-0
-export OMS_ARCHIVE_DIR=/tmp/oms-archive-0
-export OMS_MAX_NOTIONAL=10000000
-export OMS_SYMBOLS="AAPL,MSFT,GOOG,AMZN"
-export OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010"
-
-./gradlew :oms-core:installDist
-oms-core/build/install/oms-core/bin/oms-core
+./run-local.sh
 ```
 
-Successful startup logs:
+Builds both modules, starts OmsNode, waits for the MediaDriver to be ready, then starts AlgoSorAgent. Ctrl-C shuts both down cleanly.
+
+```
+Building all modules...
+Build OK.
+Starting OmsNode (node 0)... logging to /tmp/oms-node.log
+  Waiting for Aeron MediaDriver... ready.
+Starting AlgoSorAgent... logging to /tmp/oms-launcher.log
+================================================================
+  OMS stack is running.
+  Node log    : tail -f /tmp/oms-node.log
+  Launcher log: tail -f /tmp/oms-launcher.log
+  Press Ctrl-C to stop.
+================================================================
+```
+
+Expected in `/tmp/oms-node.log` once leader-elected:
 ```
 INFO  OmsNode - Starting OMS node 0 with 4 permitted symbols (deleteArchiveOnStart=false)
 INFO  OmsNode - OMS node 0 is running. Waiting for shutdown signal...
 INFO  OmsClusteredService - OMS cluster role changed: FOLLOWER → LEADER
 INFO  OmsClusteredService - New leadership term: leaderMemberId=0 termId=0
 ```
+
+### Node only (no AlgoSorAgent)
+
+```bash
+./run-oms-node.sh
+```
+
+Useful when connecting a different client or debugging node behaviour in isolation.
+
+### Components individually
+
+```bash
+# Terminal 1 — start the node first
+./run-oms-node.sh
+
+# Terminal 2 — start algo-sor once the node is ready
+./run-algo-sor.sh
+```
+
+`run-algo-sor.sh` connects to the node over Aeron IPC. The node must be running and its MediaDriver must be up before the launcher starts.
 
 ### Environment Variables Reference
 
@@ -335,32 +365,37 @@ HARNESS_CLUSTER_INGRESS="0=10.0.0.5:9000" ./run-harness.sh
 
 ## Three-Node Cluster (production-like)
 
-Run three `OmsNode` processes with different `OMS_NODE_ID` values. All three must agree on `OMS_CLUSTER_MEMBERS`. For a local multi-node test (all on localhost with different ports):
+Run three `OmsNode` processes with different `OMS_NODE_ID` values. All three must agree on the same `OMS_CLUSTER_MEMBERS` string. Use `run-oms-node.sh` in three terminals, overriding the per-node variables:
 
-**Node 0:**
+**Terminal 1 — node 0:**
 ```bash
-export OMS_NODE_ID=0
-export OMS_AERON_DIR=/tmp/oms-aeron-0
-export OMS_ARCHIVE_DIR=/tmp/oms-archive-0
-export OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010|1,localhost:9100,localhost:9101,localhost:9102,localhost:9103,localhost:8110|2,localhost:9200,localhost:9201,localhost:9202,localhost:9203,localhost:8210"
-export OMS_CLUSTER_INGRESS_CHANNEL="aeron:udp?endpoint=localhost:9000"
-export OMS_ARCHIVE_REPLICATION_CHANNEL="aeron:udp?endpoint=localhost:8020"
-oms-core/build/install/oms-core/bin/oms-core
+OMS_NODE_ID=0 \
+OMS_AERON_DIR=/tmp/oms-aeron-0 \
+OMS_ARCHIVE_DIR=/tmp/oms-archive-0 \
+OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010|1,localhost:9100,localhost:9101,localhost:9102,localhost:9103,localhost:8110|2,localhost:9200,localhost:9201,localhost:9202,localhost:9203,localhost:8210" \
+OMS_CLUSTER_INGRESS_CHANNEL="aeron:udp?endpoint=localhost:9000" \
+OMS_ARCHIVE_CONTROL_CHANNEL="aeron:udp?endpoint=localhost:8010" \
+OMS_ARCHIVE_REPLICATION_CHANNEL="aeron:udp?endpoint=localhost:8020" \
+./run-oms-node.sh
 ```
 
-**Node 1** (different `OMS_NODE_ID`, `OMS_AERON_DIR`, `OMS_ARCHIVE_DIR`, and per-node channels):
+**Terminal 2 — node 1:**
 ```bash
-export OMS_NODE_ID=1
-export OMS_AERON_DIR=/tmp/oms-aeron-1
-export OMS_ARCHIVE_DIR=/tmp/oms-archive-1
-export OMS_CLUSTER_MEMBERS="..."   # same string as node 0
-export OMS_CLUSTER_INGRESS_CHANNEL="aeron:udp?endpoint=localhost:9100"
-export OMS_ARCHIVE_CONTROL_CHANNEL="aeron:udp?endpoint=localhost:8110"
-export OMS_ARCHIVE_REPLICATION_CHANNEL="aeron:udp?endpoint=localhost:8120"
-oms-core/build/install/oms-core/bin/oms-core
+OMS_NODE_ID=1 \
+OMS_AERON_DIR=/tmp/oms-aeron-1 \
+OMS_ARCHIVE_DIR=/tmp/oms-archive-1 \
+OMS_CLUSTER_MEMBERS="0,localhost:9000,..." \
+OMS_CLUSTER_INGRESS_CHANNEL="aeron:udp?endpoint=localhost:9100" \
+OMS_ARCHIVE_CONTROL_CHANNEL="aeron:udp?endpoint=localhost:8110" \
+OMS_ARCHIVE_REPLICATION_CHANNEL="aeron:udp?endpoint=localhost:8120" \
+./run-oms-node.sh
 ```
 
-Raft elects one leader (watch for `role=LEADER` in the logs). The other two log `role=FOLLOWER`. The harness or FIX client connects to the leader's `OMS_CLUSTER_INGRESS_CHANNEL` endpoint.
+**Terminal 3 — node 2:** same pattern with `OMS_NODE_ID=2` and ports `9200`, `8210`, `8220`.
+
+Raft elects one leader (watch for `role=LEADER` in the logs of one terminal). The other two log `role=FOLLOWER`. The harness or FIX client connects to the leader's `OMS_CLUSTER_INGRESS_CHANNEL` endpoint.
+
+For a real multi-host deployment replace `localhost` with each node's actual IP address in `OMS_CLUSTER_MEMBERS` and the per-node channel env vars.
 
 ---
 
