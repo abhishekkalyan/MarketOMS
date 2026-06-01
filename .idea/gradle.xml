@@ -10,6 +10,7 @@
             <option value="$PROJECT_DIR$/algo-sor" />
             <option value="$PROJECT_DIR$/oms-codec" />
             <option value="$PROJECT_DIR$/oms-core" />
+            <option value="$PROJECT_DIR$/oms-harness" />
             <option value="$PROJECT_DIR$/oms-launcher" />
           </set>
         </option>

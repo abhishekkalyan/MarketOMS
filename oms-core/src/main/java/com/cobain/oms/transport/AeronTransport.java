@@ -37,11 +37,8 @@ public final class AeronTransport {
     public static final int STREAM_VENUE_3_OUT   = 22; // OMS → venue 3 FIX engine
 
     // ── IPC streams connecting oms-core ↔ algo-sor ───────────────────────────
-    public static final int STREAM_OMS_TO_ALGO    = 30; // oms-core → algo-sor: parent orders
-    public static final int STREAM_ALGO_TO_OMS    = 31; // algo-sor → oms-core: child order acks (legacy)
-
-    /** algo-sor → oms-core: ChildOrderIntent routing instructions (new intent-driven architecture). */
-    public static final int STREAM_CHILD_INTENTS  = 12;
+    public static final int STREAM_OMS_TO_ALGO   = 30; // oms-core → algo-sor: parent orders
+    public static final int STREAM_CHILD_INTENTS = 12; // algo-sor → oms-core: ChildOrderIntent messages
 
     // ── IPC channel URI (no parameters needed for IPC) ────────────────────────
     public static final String IPC_CHANNEL = "aeron:ipc";

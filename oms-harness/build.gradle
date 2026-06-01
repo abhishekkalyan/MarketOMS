@@ -1,17 +1,15 @@
-// Core OMS module: state machine, validation, cluster service, snapshot, FIX encoder.
+// Test harness module: injects orders into a running OmsNode and validates responses.
+// Depends only on oms-codec (wire format) + Aeron cluster client API.
+// Does NOT depend on oms-core or algo-sor — it is a black-box client.
 plugins {
     id 'application'
 }
 
 application {
-    mainClass = 'com.cobain.oms.cluster.OmsNode'
+    mainClass = 'com.cobain.oms.harness.HarnessLauncher'
     applicationDefaultJvmArgs = [
         '--add-opens', 'java.base/sun.nio.ch=ALL-UNNAMED',
         '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
-        '-XX:+UseG1GC',
-        '-XX:MaxGCPauseMillis=10',
-        '-XX:+AlwaysPreTouch',
-        '-XX:+DisableExplicitGC',
     ]
 }
 
