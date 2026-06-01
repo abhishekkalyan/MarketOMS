@@ -60,35 +60,69 @@ public final class OmsNode {
         final String archiveDir      = env("OMS_ARCHIVE_DIR", "/tmp/oms-archive-" + nodeId);
         final long   maxNotional     = longEnv("OMS_MAX_NOTIONAL", 10_000_000L);
         final String symbolsEnv      = env("OMS_SYMBOLS", "AAPL,MSFT,GOOG,AMZN");
+        // Format (Aeron 1.40+): <id>,<clientHost:port>,<memberHost:port>,<logHost:port>,<transferHost:port>,<archiveHost:port>
+        // Separate multiple members with '|'. Port layout per node (base + offset):
+        //   clientPort=9000, memberPort=9001, logPort=9002, transferPort=9003, archiveControlPort=8010
+        // For multi-node replace localhost with each node's host/IP.
         final String clusterMembers  = env("OMS_CLUSTER_MEMBERS",
-                "0,localhost:9000:9001:9002:0:9003|"
-                + "1,localhost:9010:9011:9012:0:9013|"
-                + "2,localhost:9020:9021:9022:0:9023");
+                "0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010");
+        // Local default: OS-assigned port — fine for single-node dev.
+        // Multi-node: set to aeron:udp?endpoint=<this-node-ip>:8020 (fixed port, per node).
+        final String replicationChannel = env("OMS_ARCHIVE_REPLICATION_CHANNEL",
+                "aeron:udp?endpoint=localhost:0");
+        // Archive bind channel — used by the Archive itself and for cross-node replication.
+        final String archiveControlChannel = env("OMS_ARCHIVE_CONTROL_CHANNEL",
+                "aeron:udp?endpoint=localhost:8010");
+        // Local client channels — ConsensusModule and ClusteredServiceContainer talk to the
+        // co-located archive over IPC. Must be aeron:ipc when archive is embedded in-process.
+        // Only change to UDP if running a standalone (out-of-process) archive.
+        final String archiveLocalControlChannel = env("OMS_ARCHIVE_LOCAL_CONTROL_CHANNEL",
+                "aeron:ipc");
+        final String archiveLocalResponseChannel = env("OMS_ARCHIVE_LOCAL_RESPONSE_CHANNEL",
+                "aeron:ipc");
+        // Ingress channel: where the Raft leader listens for client session requests.
+        // Port must match the client-port slot in OMS_CLUSTER_MEMBERS for this node.
+        final String ingressChannel = env("OMS_CLUSTER_INGRESS_CHANNEL",
+                "aeron:udp?endpoint=localhost:9000");
 
         // Pre-encode all permitted symbols into longs at startup (off hot path)
         final long[] permittedSymbols = parseSymbols(symbolsEnv);
 
-        log.info("Starting OMS node {} with {} permitted symbols", nodeId, permittedSymbols.length);
+        // OMS_ARCHIVE_DELETE_ON_START=true wipes all archive state on each restart.
+        // Set to false (default) for production so snapshots survive restarts.
+        // Set to true for dev/test harness to guarantee a clean state each run.
+        final boolean deleteArchiveOnStart = boolEnv("OMS_ARCHIVE_DELETE_ON_START", false);
+
+        log.info("Starting OMS node {} with {} permitted symbols (deleteArchiveOnStart={})",
+                 nodeId, permittedSymbols.length, deleteArchiveOnStart);
 
         // ── Aeron MediaDriver ──────────────────────────────────────────────────
         final MediaDriver.Context mediaDriverCtx = buildMediaDriverContext(aeronDir);
 
-        // ── Aeron Archive ──────────────────────────────────────────────────────
         final Archive.Context archiveCtx = new Archive.Context()
                 .aeronDirectoryName(aeronDir)
                 .archiveDirectoryName(archiveDir)
+                .controlChannel(archiveControlChannel)
+                .replicationChannel(replicationChannel)
                 .threadingMode(ArchiveThreadingMode.SHARED)
-                .deleteArchiveOnStart(false); // retain archive for snapshot recovery
+                .deleteArchiveOnStart(deleteArchiveOnStart);
 
         // ── ConsensusModule (Raft) ─────────────────────────────────────────────
         // In Aeron 1.40+, clusterMemberId(int) identifies this node within the cluster members
         // string (replaces the older memberId / clusterMembersStatusEndpoints API).
+        final java.io.File clusterDir = new java.io.File(archiveDir + "/cluster");
         final ConsensusModule.Context consensusCtx = new ConsensusModule.Context()
                 .aeronDirectoryName(aeronDir)
-                .archiveContext(new AeronArchive.Context().aeronDirectoryName(aeronDir))
+                .archiveContext(new AeronArchive.Context()
+                        .aeronDirectoryName(aeronDir)
+                        .controlRequestChannel(archiveLocalControlChannel)
+                        .controlResponseChannel(archiveLocalResponseChannel))
+                .ingressChannel(ingressChannel)
+                .replicationChannel(replicationChannel)
                 .clusterMembers(clusterMembers)
                 .clusterMemberId(nodeId)
-                .clusterDir(new java.io.File(archiveDir + "/cluster"));
+                .deleteDirOnStart(deleteArchiveOnStart)
+                .clusterDir(clusterDir);
 
         // ── OMS Service — Aeron publications are created after MediaDriver is up ─
         // We launch the MediaDriver first, then connect publications.
@@ -124,8 +158,11 @@ public final class OmsNode {
                         new ClusteredServiceContainer.Context()
                                 .aeronDirectoryName(aeronDir)
                                 .archiveContext(
-                                        new AeronArchive.Context().aeronDirectoryName(aeronDir))
-                                .clusterDir(new java.io.File(archiveDir + "/cluster"))
+                                        new AeronArchive.Context()
+                                                .aeronDirectoryName(aeronDir)
+                                                .controlRequestChannel(archiveLocalControlChannel)
+                                                .controlResponseChannel(archiveLocalResponseChannel))
+                                .clusterDir(clusterDir)
                                 .clusteredService(omsService);
 
                 try (ClusteredServiceContainer container =
@@ -196,6 +233,11 @@ public final class OmsNode {
     private static long longEnv(final String key, final long defaultValue) {
         final String v = System.getenv(key);
         return (v != null && !v.isEmpty()) ? Long.parseLong(v) : defaultValue;
+    }
+
+    private static boolean boolEnv(final String key, final boolean defaultValue) {
+        final String v = System.getenv(key);
+        return (v != null && !v.isEmpty()) ? Boolean.parseBoolean(v) : defaultValue;
     }
 
     private OmsNode() {}

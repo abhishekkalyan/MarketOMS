@@ -13,7 +13,12 @@
       "Bash(export CLAUDE_CODE_TMPDIR=/tmp)",
       "Bash(awk '/public byte validate\\\\\\(/,/^    \\\\}/' /Users/abhishekkalyanaraman/Code/MarketOMS/oms-core/src/main/java/com/cobain/oms/core/ChildOrderIntentValidator.java)",
       "Bash(tee /tmp/oms_build_output.txt)",
-      "Bash(./gradlew build *)"
+      "Bash(./gradlew build *)",
+      "Bash(./gradlew :oms-core:installDist --quiet)",
+      "Bash(bash run-harness.sh)",
+      "Bash(./gradlew :oms-harness:installDist --quiet)",
+      "Bash(./gradlew :oms-core:clean :oms-core:installDist)",
+      "Bash(./gradlew :oms-core:clean :oms-core:installDist --quiet)"
     ]
   }
 }

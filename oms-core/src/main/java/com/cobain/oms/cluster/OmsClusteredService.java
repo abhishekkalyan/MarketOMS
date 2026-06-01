@@ -66,6 +66,11 @@ public final class OmsClusteredService implements ClusteredService {
     private final UnsafeBuffer algoOutbound =
             new UnsafeBuffer(new byte[ClusterMessageType.IPC_MESSAGE_SIZE]);
 
+    // ── Pre-allocated egress buffer for cluster client responses ─────────────
+    // Same framing as ingress: 1-byte ClusterMessageType + 128-byte OrderLayout.
+    private final UnsafeBuffer egressBuffer =
+            new UnsafeBuffer(new byte[ClusterMessageType.IPC_MESSAGE_SIZE]);
+
     // ── Intent inbound view ───────────────────────────────────────────────────
     private final ChildOrderIntentFlyweight intentView = new ChildOrderIntentFlyweight();
 
@@ -113,6 +118,8 @@ public final class OmsClusteredService implements ClusteredService {
                      snapshotImage.position());
             snapshotManager.loadSnapshot(snapshotImage, orderBook, validationEngine, idleStrategy);
             log.info("Snapshot restored: {} open orders", orderBook.openOrderCount());
+        } else {
+            log.info("No snapshot found — starting with fresh state");
         }
 
         recomputeNextOrderId();
@@ -147,19 +154,19 @@ public final class OmsClusteredService implements ClusteredService {
             return;
         }
 
-        final byte msgType = buffer.getByte(offset + FIXMessageDecoder.MSG_TYPE_OFFSET);
+        // Cluster ingress uses ClusterMessageType framing: byte 0 = msgType, bytes 1-128 = OrderLayout.
+        // FIXMessageDecoder is only used for the FIX bridge → oms-core IPC channel, not here.
+        final byte msgType = buffer.getByte(offset + ClusterMessageType.OFFSET_MSG_TYPE);
 
         switch (msgType) {
-            case FIXMessageDecoder.MSG_NEW_ORDER_SINGLE ->
+            case ClusterMessageType.NEW_ORDER ->
                     handleNewOrderSingle(session, timestamp, buffer, offset);
-            case FIXMessageDecoder.MSG_CANCEL_REQUEST ->
+            case ClusterMessageType.CANCEL_ORDER ->
                     handleCancelRequest(session, timestamp, buffer, offset);
-            case FIXMessageDecoder.MSG_CANCEL_REPLACE ->
+            case ClusterMessageType.REPLACE_ORDER ->
                     handleCancelReplace(session, timestamp, buffer, offset);
-            case FIXMessageDecoder.MSG_EXEC_REPORT ->
-                    handleExecReport(buffer, offset, timestamp);
             default ->
-                    log.warn("Unknown FIX msgType: {}", (char) msgType);
+                    log.warn("Unknown cluster msgType: {}", msgType);
         }
     }
 
@@ -301,29 +308,44 @@ public final class OmsClusteredService implements ClusteredService {
 
         final int slot = orderBook.allocateSlot();
         if (slot < 0) {
-            sendRejectFromBuffer(buffer, offset, "ORDER_BOOK_FULL");
+            sendReject(buffer.getLong(offset + ClusterMessageType.OFFSET_PAYLOAD + OrderLayout.CL_ORD_ID_OFFSET), "ORDER_BOOK_FULL");
             return;
         }
         final OrderFlyweight order = orderBook.wrapFlyweight(slot);
 
-        FIXMessageDecoder.decodeNewOrderSingle(buffer, offset, order);
+        // Payload is OrderLayout format starting at OFFSET_PAYLOAD (byte 1).
+        // Read each field directly — zero-alloc, no intermediate representation.
+        final int p = offset + ClusterMessageType.OFFSET_PAYLOAD;
+        order.accountId(   buffer.getLong( p + OrderLayout.ACCOUNT_ID_OFFSET));
+        order.clOrdId(     buffer.getLong( p + OrderLayout.CL_ORD_ID_OFFSET));
+        order.origClOrdId( buffer.getLong( p + OrderLayout.ORIG_CL_ORD_ID_OFFSET));
+        order.symbol(      buffer.getLong( p + OrderLayout.SYMBOL_OFFSET));
+        order.price(       buffer.getLong( p + OrderLayout.PRICE_OFFSET));
+        order.qty(         buffer.getLong( p + OrderLayout.QTY_OFFSET));
+        order.filledQty(   0L);
+        order.leavesQty(   buffer.getLong( p + OrderLayout.QTY_OFFSET));
+        order.side(        buffer.getByte( p + OrderLayout.SIDE_OFFSET));
+        order.timeInForce( buffer.getByte( p + OrderLayout.TIME_IN_FORCE_OFFSET));
+        order.venueId(     0);
+
+        // Server-assigned fields
         order.orderId(nextOrderId++);
-
-        final int validationResult = validationEngine.validateNewOrder(order);
-        if (validationResult != ValidationEngine.VALID) {
-            orderBook.freeSlot(slot);
-            log.debug("Order rejected: clOrdId={} reason={}",
-                      order.clOrdId(), ValidationEngine.errorName(validationResult));
-            sendRejectFromBuffer(buffer, offset, ValidationEngine.errorName(validationResult));
-            return;
-        }
-
-        // Parent orders go straight to NEW (accepted into OMS; ChildOrderIntentValidator requires NEW)
         order.orderState(OrderState.NEW);
         order.transactTime(System.nanoTime());
         order.childCount(0);
         order.parentOrFirstChildId(0L);
         order.nextSiblingSlot(-1);
+
+        final int validationResult = validationEngine.validateNewOrder(order);
+        if (validationResult != ValidationEngine.VALID) {
+            log.debug("Order rejected: clOrdId={} reason={}",
+                      order.clOrdId(), ValidationEngine.errorName(validationResult));
+            // Send REJECTED exec report before freeing the slot (flyweight still valid here).
+            order.orderState(OrderState.REJECTED);
+            sendEgressExecReport(session, ClusterMessageType.NEW_ORDER, order);
+            orderBook.freeSlot(slot);
+            return;
+        }
 
         orderBook.index(slot, order.clOrdId(), order.orderId());
         validationEngine.registerAccepted(order.clOrdId(), order.orderId());
@@ -337,7 +359,8 @@ public final class OmsClusteredService implements ClusteredService {
                 OrderLayout.MESSAGE_SIZE);
         algoSorPublication.offer(algoOutbound, 0, ClusterMessageType.IPC_MESSAGE_SIZE);
 
-        fixEncoder.sendExecReport(order, FIXMessageDecoder.EXEC_TYPE_NEW, 0L);
+        // Send exec report (state=NEW) back to the cluster client via egress.
+        sendEgressExecReport(session, ClusterMessageType.NEW_ORDER, order);
     }
 
     private void handleCancelRequest(
@@ -346,8 +369,9 @@ public final class OmsClusteredService implements ClusteredService {
             final DirectBuffer buffer,
             final int offset) {
 
-        final long origClOrdId = buffer.getLong(offset + FIXMessageDecoder.ORIG_CL_ORD_ID_IN);
-        final long newClOrdId  = buffer.getLong(offset + FIXMessageDecoder.CL_ORD_ID_OFFSET_IN);
+        final int  p           = offset + ClusterMessageType.OFFSET_PAYLOAD;
+        final long origClOrdId = buffer.getLong(p + OrderLayout.ORIG_CL_ORD_ID_OFFSET);
+        final long newClOrdId  = buffer.getLong(p + OrderLayout.CL_ORD_ID_OFFSET);
 
         final int slot = orderBook.slotByClOrdId(origClOrdId);
         if (slot < 0) {
@@ -362,11 +386,14 @@ public final class OmsClusteredService implements ClusteredService {
             return;
         }
 
-        // Cancel all live child orders
+        // Cancel all live child orders (routes cancel NOS to FIX bridge for each child)
         childRegistry.cancelAllChildren(order, child -> fixEncoder.sendCancelRequest(child));
 
         validationEngine.registerAccepted(newClOrdId, order.orderId());
         fixEncoder.sendCancelRequest(order);
+
+        // Send cancel ack back to the cluster client via egress.
+        sendEgressExecReport(session, ClusterMessageType.CANCEL_ORDER, order);
     }
 
     private void handleCancelReplace(
@@ -375,8 +402,9 @@ public final class OmsClusteredService implements ClusteredService {
             final DirectBuffer buffer,
             final int offset) {
 
-        final long origClOrdId = buffer.getLong(offset + FIXMessageDecoder.ORIG_CL_ORD_ID_IN);
-        final long newClOrdId  = buffer.getLong(offset + FIXMessageDecoder.CL_ORD_ID_OFFSET_IN);
+        final int  p           = offset + ClusterMessageType.OFFSET_PAYLOAD;
+        final long origClOrdId = buffer.getLong(p + OrderLayout.ORIG_CL_ORD_ID_OFFSET);
+        final long newClOrdId  = buffer.getLong(p + OrderLayout.CL_ORD_ID_OFFSET);
 
         final int slot = orderBook.slotByClOrdId(origClOrdId);
         if (slot < 0) {
@@ -393,8 +421,8 @@ public final class OmsClusteredService implements ClusteredService {
 
         order.clOrdId(newClOrdId);
         order.origClOrdId(origClOrdId);
-        order.price(buffer.getLong(offset + FIXMessageDecoder.PRICE_OFFSET_IN));
-        order.qty(buffer.getLong(offset + FIXMessageDecoder.ORDER_QTY_OFFSET_IN));
+        order.price(buffer.getLong(p + OrderLayout.PRICE_OFFSET));
+        order.qty(buffer.getLong(p + OrderLayout.QTY_OFFSET));
         order.leavesQty(order.qty() - order.filledQty());
 
         validationEngine.registerAccepted(newClOrdId, order.orderId());
@@ -493,12 +521,59 @@ public final class OmsClusteredService implements ClusteredService {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private void sendRejectFromBuffer(
-            final DirectBuffer buffer,
-            final int offset,
-            final String reason) {
-        log.info("Rejecting order: clOrdId={} reason={}",
-                 buffer.getLong(offset + FIXMessageDecoder.CL_ORD_ID_OFFSET_IN), reason);
+    /**
+     * Sends an OrderLayout record back to the originating cluster client via egress.
+     * Framing: byte 0 = ClusterMessageType, bytes 1-128 = OrderLayout fields from flyweight.
+     * Spins on back-pressure with Thread.onSpinWait() — no sleep, no allocation.
+     */
+    /**
+     * Sends an exec report back to the originating cluster client via egress.
+     * Framing: byte 0 = ClusterMessageType, bytes 1-128 = OrderLayout fields.
+     * Copies field-by-field from the flyweight — the flyweight may point into the
+     * OrderBook backing buffer or be a temporary view; either is safe here.
+     * Spins on back-pressure with Thread.onSpinWait() — no sleep, no allocation.
+     */
+    private void sendEgressExecReport(
+            final ClientSession session,
+            final byte msgType,
+            final OrderFlyweight order) {
+
+        egressBuffer.putByte(ClusterMessageType.OFFSET_MSG_TYPE, msgType);
+        final int p = ClusterMessageType.OFFSET_PAYLOAD;
+        egressBuffer.putLong( p + OrderLayout.ACCOUNT_ID_OFFSET,          order.accountId());
+        egressBuffer.putLong( p + OrderLayout.CL_ORD_ID_OFFSET,           order.clOrdId());
+        egressBuffer.putLong( p + OrderLayout.ORDER_ID_OFFSET,             order.orderId());
+        egressBuffer.putLong( p + OrderLayout.ORIG_CL_ORD_ID_OFFSET,       order.origClOrdId());
+        egressBuffer.putLong( p + OrderLayout.SYMBOL_OFFSET,               order.symbol());
+        egressBuffer.putLong( p + OrderLayout.PRICE_OFFSET,                order.price());
+        egressBuffer.putLong( p + OrderLayout.QTY_OFFSET,                  order.qty());
+        egressBuffer.putLong( p + OrderLayout.FILLED_QTY_OFFSET,           order.filledQty());
+        egressBuffer.putLong( p + OrderLayout.LEAVES_QTY_OFFSET,           order.leavesQty());
+        egressBuffer.putByte( p + OrderLayout.SIDE_OFFSET,                 order.side());
+        egressBuffer.putByte( p + OrderLayout.TIME_IN_FORCE_OFFSET,        order.timeInForce());
+        egressBuffer.putByte( p + OrderLayout.ORDER_STATE_OFFSET,          order.orderState());
+
+        // Use the cluster's idle strategy — consistent with how back-pressure is
+        // handled elsewhere in the cluster service thread.
+        // Guard against permanently blocked sessions (e.g. NOT_CONNECTED egress):
+        // if offer fails after 1000 attempts, log and drop rather than blocking forever.
+        int attempts = 0;
+        idleStrategy.reset();
+        long offerResult;
+        do {
+            offerResult = session.offer(egressBuffer, 0, ClusterMessageType.IPC_MESSAGE_SIZE);
+            if (offerResult > 0) break;
+            idleStrategy.idle();
+            attempts++;
+        } while (attempts < 1_000);
+        if (offerResult <= 0) {
+            log.warn("Egress offer failed for session={} after {} attempts: result={}",
+                     session.id(), attempts, offerResult);
+        }
+    }
+
+    private void sendReject(final long clOrdId, final String reason) {
+        log.info("Rejecting order: clOrdId={} reason={}", clOrdId, reason);
     }
 
     private void recomputeNextOrderId() {

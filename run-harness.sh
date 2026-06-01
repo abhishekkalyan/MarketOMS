@@ -16,11 +16,13 @@ export OMS_NODE_ID=0
 export OMS_AERON_DIR="/tmp/oms-aeron-0"
 export OMS_ARCHIVE_DIR="/tmp/oms-archive-0"
 export OMS_MAX_NOTIONAL=10000000
+# Wipe archive and cluster state on each restart so the harness always starts clean.
+export OMS_ARCHIVE_DELETE_ON_START=true
 export OMS_SYMBOLS="AAPL,MSFT,GOOG,AMZN"
-export OMS_CLUSTER_MEMBERS="0,localhost:9000:9001:9002:0:9003"
+export OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010"
 
 export HARNESS_AERON_DIR="/tmp/oms-aeron-harness"
-export HARNESS_CLUSTER_INGRESS="${HARNESS_CLUSTER_INGRESS:-localhost:9000}"
+export HARNESS_CLUSTER_INGRESS="${HARNESS_CLUSTER_INGRESS:-0=localhost:9000}"
 
 NODE_LOG="/tmp/oms-node-harness.log"
 LAUNCHER_LOG="/tmp/oms-launcher-harness.log"
@@ -62,10 +64,11 @@ echo "  OmsNode PID: ${OMS_NODE_PID}"
 # ── 4. Wait for MediaDriver to be ready ───────────────────────────────────────
 echo -n "  Waiting for OmsNode MediaDriver"
 WAITED=0
-until ls "${OMS_AERON_DIR}"/aeron-*/cnc.dat 2>/dev/null | grep -q cnc.dat; do
+# cnc.dat may sit directly in OMS_AERON_DIR or in an aeron-<pid> subdirectory depending on platform.
+until find "${OMS_AERON_DIR}" -name "cnc.dat" 2>/dev/null | grep -q cnc.dat; do
     sleep 1; WAITED=$((WAITED + 1)); echo -n "."
-    if [[ ${WAITED} -ge 30 ]]; then
-        echo ""; echo "ERROR: OmsNode did not start in 30s. See ${NODE_LOG}"; tail -30 "${NODE_LOG}"; exit 1
+    if [[ ${WAITED} -ge 60 ]]; then
+        echo ""; echo "ERROR: OmsNode did not start in 60s. See ${NODE_LOG}"; tail -30 "${NODE_LOG}"; exit 1
     fi
     if ! kill -0 "${OMS_NODE_PID}" 2>/dev/null; then
         echo ""; echo "ERROR: OmsNode exited. See ${NODE_LOG}"; tail -30 "${NODE_LOG}"; exit 1

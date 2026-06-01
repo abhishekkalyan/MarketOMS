@@ -31,7 +31,8 @@ public final class HarnessLauncher {
     public static void main(final String[] args) throws Exception {
 
         final String aeronDir       = env("HARNESS_AERON_DIR",       "/tmp/oms-aeron-harness");
-        final String clusterIngress = env("HARNESS_CLUSTER_INGRESS",  "localhost:9000");
+        // Format: <nodeId>=<host:port>[,<nodeId>=<host:port>...]  e.g. "0=localhost:9000"
+        final String clusterIngress = env("HARNESS_CLUSTER_INGRESS", "0=localhost:9000");
 
         log.info("================================================================");
         log.info("  OMS Test Harness");
