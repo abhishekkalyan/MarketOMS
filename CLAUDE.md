@@ -5,91 +5,81 @@ A task is not complete until all four rules are satisfied.
 
 ---
 
-## Rule 1 — Check Design Before Coding
+## Rule 1 — Load Design Before Coding
 
-Before writing, editing, or deleting any Java source file:
+At the start of every task:
+1. Read `design/INDEX.md`
+2. Identify your task type from the Task → Files table
+3. Load only the listed files — do not load the full design/ folder
+4. Work through `design/checklist.md` before touching any source file
 
-1. Read `DESIGN.md` Section 2 (Core Design Principles)
-2. Read the Component Contract in Section 4 for every class you intend to touch
-3. Work through the Design Analysis Checklist (Section 12) question by question
-4. If any checklist answer is NO, stop and explain the conflict before proceeding
-
-Do not skip this even for "small" changes. A one-line change to
+Do not skip this for "small" changes. A one-line change to
 `ChildOrderRegistry.createChild()` can violate the golden-source invariant.
-A new import in `algo-sor` can silently break the module boundary.
 
 ---
 
-## Rule 2 — Update DESIGN.md After Every Change
+## Rule 2 — Update Design After Every Change
 
-After completing any task that changes the system, update `DESIGN.md` before
-reporting done. This is part of the definition of done, not a follow-up task.
-
-### What triggers a DESIGN.md update
-
-| Trigger | DESIGN.md section(s) to update |
-|---------|--------------------------------|
-| New module added or removed | 1, 3.1, 3.3 |
-| Module dependency added, removed, or changed | 3.1, 3.2 |
-| Aeron IPC stream added, removed, or direction changed | 3.2 |
-| New message type in `ClusterMessageType` | 3.2, 6, Glossary |
-| Class moved between modules | 3.1, 3.3, 4 |
-| New component introduced | 3.3, 4, 11, Glossary |
-| `OrderLayout` field added, moved, or resized | 7.1 |
-| `ChildOrderIntentFlyweight` field changed | 7.2 |
-| State byte constant added or changed | 6.1, 6.2, 6.3, Glossary |
-| Transition added or removed | 6.2, 6.3 |
-| `registerTransitions()` call changed | 6.2, 9 |
-| Snapshot format changed | 9 |
-| New environment variable in `OmsNode` | 9 footnote |
-| Build steps changed | 3.1 boundary check commands |
-| New design decision made | 11 |
-
-### How to update
-
-1. Work through the trigger table above for everything changed in this task
-2. Edit the relevant DESIGN.md section directly — update tables, diagrams,
-   and constant values in-place
-3. Do not add a changelog or "what changed" paragraph — DESIGN.md describes
-   current state only; git history is the changelog
-4. After updating, re-run all DESIGN.md Step 3 verification commands:
-   - All 13 section grep checks still pass
-   - Byte constants still match source (`grep "public static final byte" ...`)
-   - Stream IDs still match source
-   - `wc -l DESIGN.md` is still within 600–1200 lines
-   - No placeholder text found
+After completing any task that modifies the system:
+1. Consult the File Ownership table in `design/INDEX.md`
+2. Update the file that owns the changed fact — directly, in-place
+3. Never add the same fact to two design files
+4. Run the post-change verification from `design/INDEX.md`
+5. If any design file exceeds 250 lines after the update, report it
 
 ---
 
 ## Rule 3 — Enforce Principles on Every Change
 
-The principles in `DESIGN.md` Section 2 are invariants, not guidelines.
-Before committing any change, verify each applicable principle:
-
-| Principle | Verification command |
-|-----------|---------------------|
-| Zero-GC on hot path | `grep -n " new " [changed file] \| grep -v "//\|test\|Test"` — no hits in hot-path methods |
-| Single-threaded execution | `grep -n "synchronized\|AtomicReference\|ReentrantLock" [changed file]` — no hits |
-| `oms-core` golden source | `grep -rn "ChildOrderRegistry\|OrderBook" algo-sor/src/` — no hits |
-| `algo-sor` intent-only | `grep -rn "FIXMessageEncoder" algo-sor/src/` — no hits |
-| `ChildOrderIntentValidator` before `createChild()` | Read `OmsClusteredService.onChildOrderIntent()` — validator called first |
-| Module boundaries | `./gradlew :algo-sor:dependencies --configuration compileClasspath \| grep oms-core` — no output |
-| Fixed-point prices | `grep -n "double\|float\|BigDecimal" [changed file]` — no hits |
-| Raft-replicated mutations | All `OrderBook`/`ChildOrderRegistry` writes inside `onSessionMessage()` or `onLoadSnapshot()` |
+Read `design/principles.md` before coding. For each principle listed there,
+run its verification command against the changed files before reporting done.
 
 ---
 
 ## Rule 4 — Self-Check Before Reporting Done
 
-Run this checklist internally before every task completion report:
+- [ ] `./gradlew clean build` passes
+- [ ] All applicable `design/principles.md` verification commands pass
+- [ ] `design/INDEX.md` File Ownership table consulted and correct file updated
+- [ ] No design file exceeds 250 lines
+- [ ] No fact duplicated across two design files
+- [ ] `design/INDEX.md` post-change verification commands pass
 
-- [ ] `./gradlew clean build` passes with zero compilation errors
-- [ ] `:algo-sor:dependencies | grep oms-core` returns no output
-- [ ] `:oms-codec:dependencies | grep aeron-cluster` returns no output
-- [ ] No `new` expression added to any hot-path method
-      (`onSessionMessage`, `onFragment`, `validateNewOrder`, `validate`, `createChild`)
-- [ ] `DESIGN.md` updated for every trigger in Rule 2 that applies to this task
-- [ ] All DESIGN.md verification commands pass after the update
+---
+
+## What Goes in CLAUDE.md vs design/
+
+These two locations have different ownership. Never add the same content
+to both.
+
+**Update `CLAUDE.md` when:**
+- A behavioural rule changes (how Claude Code must act, what it must check)
+- An operational constraint changes (JVM flags, env vars, cluster config)
+- The definition of done changes
+- A new principle is added that governs how the system must be built
+  (e.g. "oms-harness must never import ChildOrderRegistry")
+
+**Update the relevant `design/` file when:**
+- A fact changes (a constant value, a field offset, a stream ID)
+- A component contract changes (class name, thread model, invariant)
+- A state or transition changes
+- A data flow changes
+- A design decision is made or reversed
+- A new term enters the codebase
+
+**The test:** if the content answers "how should I behave?" it belongs in
+`CLAUDE.md`. If it answers "what is the system?" it belongs in `design/`.
+
+When in doubt, put facts in `design/` and rules in `CLAUDE.md`. A fact
+in `CLAUDE.md` creates a second source of truth that will drift.
+
+**`CLAUDE.md` must be updated** whenever:
+- A new Engineering Rule is added
+- A new mandatory check is added to any Rule block
+- The Aeron cluster configuration changes (env vars, port layout)
+- The `--add-opens` JVM flags change
+- The cluster ingress wire format changes
+- A new self-check item is added to Rule 4
 
 ---
 
@@ -103,10 +93,9 @@ Run this checklist internally before every task completion report:
 
 # Module Structure
 
-See `DESIGN.md` Section 3 for the authoritative module dependency graph,
-compile-time boundary rules, and runtime Aeron IPC channel map.
+See `design/principles.md` — authoritative source for module boundaries and dependency rules.
 
-Summary (do not use for precise values — use DESIGN.md Section 3):
+Summary (do not use for precise values — use design/principles.md):
 - `oms-codec` — binary contract, Agrona only, no Aeron Cluster
 - `oms-core`  — golden source for all order state, Aeron Cluster
 - `algo-sor`  — computation engine only, no dependency on `oms-core`
@@ -125,11 +114,11 @@ Hard boundary: `algo-sor` must NOT depend on `oms-core`. Enforced by:
 
 # Aeron IPC Channel Map
 
-See `DESIGN.md` Section 3.2 — authoritative source for all stream IDs,
+See `design/principles.md` — authoritative source for all stream IDs,
 directions, publishers, subscribers, and payload sizes.
 
-Do not add, remove, or renumber a stream without updating DESIGN.md Section 3.2
-first and re-running the stream ID verification command (DESIGN.md Step 3, Check 3).
+Do not add, remove, or renumber a stream without updating `design/principles.md`
+Section 3.2 first and re-running the stream ID verification command.
 
 ---
 
@@ -164,32 +153,13 @@ oms-core ──[parent order]──► algo-sor ──[ChildOrderIntent]──�
 
 # Order State Model
 
-See `DESIGN.md` Section 6 — authoritative source for all state byte values,
-the complete legal transition table, and state invariants.
-
-Key operational facts (do not use for precise values — use DESIGN.md Section 6):
-- Base states: `PENDING_NEW(0)` through `EXPIRED(9)` in `com.cobain.oms.model.OrderState`
-- Parent-only extension: `ROUTING(10)` in `com.cobain.oms.core.ParentOrderState`
-- `NUM_STATES = 16` in `OrderState`
-- `ParentOrderState.registerTransitions()` must be called in both `OmsLauncher.main()`
-  and `OmsClusteredService.onStart()` before any order processing begins —
-  without this, ROUTING transitions return `INVALID_TRANSITION`
-- Terminal check: `OrderState.isTerminal(state)` = `state >= FILLED` (>= 6)
+See `design/state-model.md` — authoritative source for all state values and transitions.
 
 ---
 
 # Binary Layout
 
-See `DESIGN.md` Section 7 — authoritative source for:
-- Complete `OrderLayout` 128-byte field table with all offsets and types
-- Complete `ChildOrderIntentFlyweight` 56-byte field table
-- Price encoding (`PRICE_MULTIPLIER = 10_000L`) with worked example
-- Symbol encoding algorithm (`OrderFlyweight.encodeSymbol()`)
-- FIX Binary inbound format (76-byte `FIXMessageDecoder` layout)
-
-Key constraint: `OrderLayout.BLOCK_LENGTH = 128` is fixed. Never increase it.
-The static assert `OFFSET_PARENT_OR_FIRST_CHILD_ID + Long.BYTES == BLOCK_LENGTH`
-enforces this at class-load time.
+See `design/wire-formats.md` — authoritative source for all field offsets.
 
 ---
 
