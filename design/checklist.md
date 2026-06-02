@@ -9,7 +9,7 @@ Before implementing any change, answer every question YES / NO / N/A with a one-
 **Zero-GC compliance**
 - [ ] Does the change introduce any `new` expression in `onSessionMessage()`, `ValidationEngine.validateNewOrder()`, `ChildOrderIntentValidator.validate()`, `ChildOrderRegistry.createChild()`, or `AlgoSorAgent.onFragment()`?
 - [ ] Does the change call `String.format()`, `toString()`, or any varargs method that creates an `Object[]` on the hot path?
-- [ ] If new pre-allocated buffers are needed, are they allocated in the relevant constructor and documented in components.md?
+- [ ] If new pre-allocated buffers are needed, are they allocated in the relevant constructor and documented in `components-codec.md` or `components-core.md`?
 
 **Golden source integrity**
 - [ ] Does the change mutate order state anywhere other than `OmsClusteredService.onSessionMessage()` or `OmsClusteredService.onChildOrderIntent()`?

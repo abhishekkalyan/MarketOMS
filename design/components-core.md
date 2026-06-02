@@ -1,58 +1,11 @@
-# Component Contracts
-<!-- Load when: touching any class listed below, or introducing a new
-     component. Update the relevant entry after any contract change. -->
+# Component Contracts — oms-core + algo-sor
+<!-- Load when: touching any oms-core or algo-sor class listed below, or
+     introducing a new stateful or computation component. Update the entry
+     after any contract change. -->
 
-## Section 4 — Component Contracts
+## oms-core Components
 
-#### OrderLayout
-
-**Class:** `com.cobain.oms.model.OrderLayout`
-**Module:** `oms-codec`
-**Thread model:** static constants class — no instances, no threads
-**Zero-allocation contract:** All fields are `public static final` primitives; class-loaded once, never instantiated
-**Inputs:** consumed by every flyweight, encoder, decoder, and validator
-**Outputs:** defines byte offsets used by `OrderFlyweight`, `FIXMessageDecoder`, `FIXMessageEncoder`, `SnapshotManager`
-**Invariants:** `OFFSET_PARENT_OR_FIRST_CHILD_ID + Long.BYTES == BLOCK_LENGTH` (static assert at class load)
-**Failure mode:** If a new field is added past offset 120, the static assert fires at JVM startup as `AssertionError`
-
----
-
-#### OrderFlyweight
-
-**Class:** `com.cobain.oms.model.OrderFlyweight`
-**Module:** `oms-codec`
-**Thread model:** single-threaded; one instance per logical thread (one shared instance in `OrderBook`, two in `ChildOrderRegistry`)
-**Zero-allocation contract:** Allocated once at construction; `wrap(MutableDirectBuffer, int)` assigns two fields — no objects created; all getters/setters are single `buffer.getLong/putLong` calls
-**Inputs:** `wrap()` call pointing at an `OrderBook` slot or `ChildOrderRegistry` store slot
-**Outputs:** direct buffer reads/writes; `copyFrom()` for bulk copy; `applyFill()` for quantity update
-**Invariants:** caller must not retain the reference past the next `wrap()` call on the same instance; `buffer` and `offset` always point at a valid allocated slot
-**Failure mode:** Stale reference after a subsequent `wrap()` points at the wrong order; `applyFill()` with a negative `lastQty` corrupts `filledQty`
-
----
-
-#### ChildOrderIntentFlyweight
-
-**Class:** `com.cobain.oms.codec.ChildOrderIntentFlyweight`
-**Module:** `oms-codec`
-**Thread model:** single-threaded; one pre-allocated instance per algo engine, one in `OmsClusteredService` (`intentView`)
-**Zero-allocation contract:** `wrap()` / `wrapReadOnly()` assign two fields; `copyTo()` is a single `putBytes()`; `allocate()` creates one instance with its own `UnsafeBuffer` at startup only
-**Inputs:** `wrapReadOnly()` over the Aeron fragment buffer in `OmsClusteredService.handleIntentFragment()`; setters called by `SmartOrderRouter.route()`
-**Outputs:** `copyTo()` used by `AlgoSorAgent.publishIntent()` to stage into the offer buffer
-**Invariants:** `BLOCK_LENGTH = 56`; caller must not retain reference past the next `wrap()` call
-**Failure mode:** Retaining a reference after `onIntent()` returns gives stale data because `SmartOrderRouter` reuses the same `intent` instance for every slice
-
----
-
-#### ClusterMessageType
-
-**Class:** `com.cobain.oms.codec.ClusterMessageType`
-**Module:** `oms-codec`
-**Thread model:** static constants class — no instances, no threads
-**Zero-allocation contract:** All fields are `public static final` primitives
-**Inputs:** referenced by `OmsClusteredService`, `AlgoSorAgent`, `OmsLauncher`, harness
-**Outputs:** defines framing constants used to encode/decode all IPC messages
-**Invariants:** `IPC_MESSAGE_SIZE = 1 + OrderLayout.MESSAGE_SIZE = 129`; `HEADER_LENGTH = 8` for intent messages
-**Failure mode:** Adding a new message type without updating all `switch` sites in `OmsClusteredService.onSessionMessage()` causes silent message drop on the `default` branch
+Components in this section own the stateful, Raft-replicated runtime of MarketOMS.
 
 ---
 
@@ -66,19 +19,6 @@
 **Outputs:** `ExclusivePublication` (IPC or UDP) and `Subscription` instances for wiring
 **Invariants:** `STREAM_OMS_TO_ALGO = 30`, `STREAM_CHILD_INTENTS = 12`, `STREAM_OMS_TO_FIX = 10`, `STREAM_FIX_TO_OMS = 11`; `IPC_CHANNEL = "aeron:ipc"`
 **Failure mode:** Mismatched stream IDs between publisher and subscriber cause the Aeron subscription to never receive messages (silent starvation, not an exception)
-
----
-
-#### OrderState + OrderEvent
-
-**Class:** `com.cobain.oms.model.OrderState`, `com.cobain.oms.model.OrderEvent`
-**Module:** `oms-codec`
-**Thread model:** static constants classes — no instances, no threads
-**Zero-allocation contract:** All fields are `public static final` byte/int primitives
-**Inputs:** used as array indices into `OrderStateMachine.TRANSITION_TABLE[state][event]`
-**Outputs:** `isTerminal(byte)` returns `state >= FILLED` (>= 6); `nameOf()` allocates a String (off-hot-path only)
-**Invariants:** `NUM_STATES = 16`, `NUM_EVENTS = 10`; `INVALID_TRANSITION = -1 (0xFF)`; terminal states are FILLED(6), CANCELED(7), REJECTED(8), EXPIRED(9)
-**Failure mode:** Adding a new state ≥ 16 causes `ArrayIndexOutOfBoundsException` in `OrderStateMachine.transition()`
 
 ---
 
@@ -116,7 +56,7 @@
 **Zero-allocation contract:** All checks are primitive comparisons or `Long2LongHashMap.get()` / `LongHashSet.contains()` calls; result codes are `int` constants; no exceptions thrown
 **Inputs:** `validateNewOrder(OrderFlyweight)` on the hot path; `registerAccepted(long, long)` after every accepted order
 **Outputs:** `int` result code (`VALID = 0`, or `ERR_*` constants 1–8)
-**Invariants:** `seenClOrdIds.get(clOrdId) != DEDUP_MISSING` is the dedup check; `DEDUP_MISSING = Long.MIN_VALUE`; validation order is cheapest-first (duplicate → side → TIF → qty → price → symbol → notional)
+**Invariants:** `seenClOrdIds.get(clOrdId) != DEDUP_MISSING` is the dedup check; `DEDUP_MISSING = Long.Min_Value`; validation order is cheapest-first (duplicate → side → TIF → qty → price → symbol → notional)
 **Failure mode:** `reset()` clears `seenClOrdIds`; must be followed by `restoreEntry()` calls for each snapshot entry, or replayed orders pass the dedup check and create duplicates
 
 ---
@@ -131,19 +71,6 @@
 **Outputs:** `PASS = 0` or `REJECT_* (20–26)`
 **Invariants:** Rule 7 (over-allocation guard) requires `computeLiveChildQty()` to be called immediately before `validate()` so the `liveChildQty` is accurate for the current work cycle
 **Failure mode:** Calling `validate()` with a stale `liveChildQty` allows concurrent child creation to exceed `parent.leavesQty()`; this corrupts the parent's fill accounting
-
----
-
-#### OrderBook
-
-**Class:** `com.cobain.oms.core.OrderBook` (physically in `oms-codec` module — see anomaly in principles.md Section 3.1)
-**Module:** `oms-codec` (compile), `oms-core` (runtime ownership)
-**Thread model:** single-threaded; `flyweight` is shared across all callers — not safe for concurrent use
-**Zero-allocation contract:** All state is pre-allocated in constructor: `byte[]` backing array (65,536 × 128 bytes = 8 MB), two `Long2LongHashMap` indexes, one `int[]` free-slot stack, two `OrderFlyweight` instances
-**Inputs:** `allocateSlot()`, `index()`, `wrapFlyweight()`, `freeSlot()`, `unindex()`, `restoreOrder()`
-**Outputs:** `wrapFlyweight(slot)` returns `flyweight` (shared — caller must not retain); `buffer()` returns the raw `UnsafeBuffer`; `slotByOrderId()` / `slotByClOrdId()` return slot index or -1
-**Invariants:** `MAX_ORDERS = 65_536`; `EMPTY = Long.MIN_VALUE`; `freeTop == 0` means full (`allocateSlot()` returns -1); `slotToOrderId[slot] == 0L` means free
-**Failure mode:** Calling `wrapFlyweight()` on a freed slot gives a flyweight pointing at zeroed bytes with no error; `freeSlot()` without `unindex()` leaves stale entries in the maps causing phantom lookups
 
 ---
 
@@ -186,6 +113,26 @@
 
 ---
 
+#### FIXMessageEncoder
+
+**Class:** `com.cobain.oms.fix.FIXMessageEncoder`
+**Module:** `oms-core`
+**Thread model:** single-threaded Raft commit thread; one instance per `OmsClusteredService`
+**Zero-allocation contract:** Single `outbound` `UnsafeBuffer` (76 bytes) pre-allocated in constructor; all encode methods write into this buffer and call `offer()` — one Aeron offer, zero allocation
+**Inputs:** `sendNewOrderSingle(OrderFlyweight)`, `sendCancelRequest()`, `sendCancelReplace()`, `sendExecReport()`
+**Outputs:** `fixEnginePublication.offer(outbound, 0, 76)` — non-blocking; returns publication position or negative back-pressure code
+**Invariants:** `offer()` is non-blocking — back-pressure is not handled here (callers may see negative result without retry); output stream 10 (`STREAM_OMS_TO_FIX`) is shared between parent exec reports and child NOS
+**Failure mode:** A negative `offer()` result on `sendNewOrderSingle()` means the child NOS is dropped; child exists in `ChildOrderRegistry` but venue never received the order — requires FIX reconciliation
+
+---
+
+## algo-sor Components
+
+Components in this section run inside `AlgoSorAgent`'s dedicated thread and must
+never reference `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`.
+
+---
+
 #### AlgoSorAgent
 
 **Class:** `com.cobain.oms.algoagent.AlgoSorAgent`
@@ -209,29 +156,3 @@
 **Outputs:** calls `sink.onIntent(intent)` once per venue slice; returns count of intents published
 **Invariants:** `MAX_VENUES = 10`; if no venue matches, routes entire qty to venue ID 1 at `parent.price()`; `intent` is reused — callers must copy before calling `onIntent()` returns
 **Failure mode:** `sink.onIntent(intent)` retaining the reference beyond the call boundary reads stale data from the next slice; venue ID 0 is skipped (treated as inactive)
-
----
-
-#### FIXMessageDecoder
-
-**Class:** `com.cobain.oms.fix.FIXMessageDecoder`
-**Module:** `oms-codec`
-**Thread model:** static utility class — called on the Raft commit thread from `OmsClusteredService.handleExecReport()`
-**Zero-allocation contract:** All methods are static; each method is a sequence of `buffer.getLong/getByte` + flyweight setter calls; `mapExecTypeToEvent()` is a single `switch` tableswitch — zero allocation
-**Inputs:** `DirectBuffer src` at `srcOffset` containing a 76-byte FIX Binary message; writable `OrderFlyweight target`
-**Outputs:** fields written directly into the target flyweight; `decodeExecReport()` returns the `execType` byte; `getLastQty()` returns `long` fill qty
-**Invariants:** `FIX_BINARY_SIZE = 76`; used ONLY for the FIX bridge → oms-core IPC path (stream 11); must NOT be used to decode cluster ingress messages (those use `ClusterMessageType` framing)
-**Failure mode:** Decoding a cluster ingress message with `FIXMessageDecoder` interprets the `ClusterMessageType` byte (1/2/3) as an ASCII MsgType — silent data corruption
-
----
-
-#### FIXMessageEncoder
-
-**Class:** `com.cobain.oms.fix.FIXMessageEncoder`
-**Module:** `oms-core`
-**Thread model:** single-threaded Raft commit thread; one instance per `OmsClusteredService`
-**Zero-allocation contract:** Single `outbound` `UnsafeBuffer` (76 bytes) pre-allocated in constructor; all encode methods write into this buffer and call `offer()` — one Aeron offer, zero allocation
-**Inputs:** `sendNewOrderSingle(OrderFlyweight)`, `sendCancelRequest()`, `sendCancelReplace()`, `sendExecReport()`
-**Outputs:** `fixEnginePublication.offer(outbound, 0, 76)` — non-blocking; returns publication position or negative back-pressure code
-**Invariants:** `offer()` is non-blocking — back-pressure is not handled here (callers may see negative result without retry); output stream 10 (`STREAM_OMS_TO_FIX`) is shared between parent exec reports and child NOS
-**Failure mode:** A negative `offer()` result on `sendNewOrderSingle()` means the child NOS is dropped; child exists in `ChildOrderRegistry` but venue never received the order — requires FIX reconciliation

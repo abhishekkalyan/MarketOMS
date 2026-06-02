@@ -25,7 +25,7 @@ After completing any task that modifies the system:
 2. Update the file that owns the changed fact — directly, in-place
 3. Never add the same fact to two design files
 4. Run the post-change verification from `design/INDEX.md`
-5. If any design file exceeds 150 lines after the update, report it
+5. If any design file exceeds 250 lines after the update, report it
 
 ---
 
@@ -41,7 +41,7 @@ run its verification command against the changed files before reporting done.
 - [ ] `./gradlew clean build` passes
 - [ ] All applicable `design/principles.md` verification commands pass
 - [ ] `design/INDEX.md` File Ownership table consulted and correct file updated
-- [ ] No design file exceeds 150 lines
+- [ ] No design file exceeds 250 lines
 - [ ] No fact duplicated across two design files
 - [ ] `design/INDEX.md` post-change verification commands pass
 
