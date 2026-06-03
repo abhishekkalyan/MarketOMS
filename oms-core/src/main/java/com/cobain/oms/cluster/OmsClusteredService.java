@@ -50,7 +50,7 @@ public final class OmsClusteredService implements ClusteredService {
 
     private static final Logger log = LoggerFactory.getLogger(OmsClusteredService.class);
 
-    private static final int INTENT_FRAGMENT_LIMIT = 20;
+    private final int intentFragmentLimit;
 
     // Periodic snapshot every 5 minutes via Raft timer + ClusterControl toggle.
     // Limits log replay window on recovery. Aeron 1.47.0 has no snapshotIntervalNs on
@@ -100,14 +100,18 @@ public final class OmsClusteredService implements ClusteredService {
             final ExclusivePublication clientPublication,
             final Subscription         intentSub,
             final long                 maxNotional,
+            final int                  maxOrders,
+            final int                  maxChildren,
+            final int                  intentFragmentLimit,
             final long...              permittedSymbols) {
 
-        this.orderBook          = new OrderBook();
-        this.validationEngine   = new ValidationEngine(maxNotional, permittedSymbols);
+        this.intentFragmentLimit = intentFragmentLimit;
+        this.orderBook          = new OrderBook(maxOrders);
+        this.validationEngine   = new ValidationEngine(maxNotional, maxOrders, permittedSymbols);
         this.snapshotManager    = new SnapshotManager();
         this.algoSorPublication = algoSorPublication;
         this.fixEncoder         = new FIXMessageEncoder(clientPublication);
-        this.childRegistry      = new ChildOrderRegistry();
+        this.childRegistry      = new ChildOrderRegistry(maxChildren);
         this.intentValidator    = new ChildOrderIntentValidator();
         this.intentSub          = intentSub;
     }
@@ -242,7 +246,7 @@ public final class OmsClusteredService implements ClusteredService {
      */
     private void pollIntents() {
         if (intentSub != null) {
-            intentSub.poll(intentFragmentHandler, INTENT_FRAGMENT_LIMIT);
+            intentSub.poll(intentFragmentHandler, intentFragmentLimit);
         }
     }
 
