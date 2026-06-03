@@ -1,0 +1,8 @@
+// Configuration module: centralised OmsConfig loading, validation, and pluggable ConfigSource.
+// Depends only on oms-codec (for default constant references) and logging.
+// Must NOT depend on oms-core, algo-sor, or any Aeron module.
+dependencies {
+    implementation project(':oms-codec')
+    implementation libs.slf4j.api
+    runtimeOnly    libs.logback
+}

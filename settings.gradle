@@ -1,2 +1,2 @@
 rootProject.name = 'market-oms'
-include 'oms-codec', 'oms-core', 'algo-sor', 'oms-launcher', 'oms-harness'
+include 'oms-codec', 'oms-config', 'oms-core', 'algo-sor', 'oms-launcher', 'oms-harness'
