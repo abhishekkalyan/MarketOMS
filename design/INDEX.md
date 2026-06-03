@@ -37,6 +37,7 @@ Never add the same fact to two files.
 | `failover.md` | Snapshot wire format, SnapshotManager constants, onTakeSnapshot and onLoadSnapshot step sequences |
 | `decisions.md` | Design decision log: what was decided, alternatives rejected, consequence of reversing |
 | `glossary.md` | Domain terms, constant values, class references, package names |
+| `resilience-review.md` | Structured resilience findings: data loss gaps, SPOF analysis, satisfied invariants |
 
 ## Post-Change Verification
 
@@ -44,7 +45,7 @@ After any task that updates a design file, run:
 
 ```bash
 # No file oversized
-awk 'END {if (NR > 250) print FILENAME " is " NR " lines — OVER LIMIT"}' design/*.md
+for f in design/*.md; do n=$(wc -l < "$f"); [ "$n" -gt 250 ] && echo "$f is $n lines — OVER LIMIT"; done
 
 # No placeholder text
 grep -rn "TODO\|FIXME\|placeholder\|TBD" design/
@@ -53,7 +54,7 @@ grep -rn "TODO\|FIXME\|placeholder\|TBD" design/
 # All files present
 for f in INDEX.md principles.md checklist.md state-model.md wire-formats.md \
           components-codec.md components-core.md data-flows.md sequences.md \
-          failover.md decisions.md glossary.md; do
+          failover.md decisions.md glossary.md resilience-review.md; do
   [ -f "design/$f" ] && echo "OK: $f" || echo "MISSING: $f"
 done
 ```

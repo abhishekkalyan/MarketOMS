@@ -4,7 +4,7 @@ aeron         = "1.47.0"
 slf4j         = "2.0.13"
 logback       = "1.5.6"
 junit-jupiter = "5.11.4"
-java          = "17"
+java          = "21"
 
 [libraries]
 agrona        = { module = "org.agrona:agrona",         version.ref = "agrona" }

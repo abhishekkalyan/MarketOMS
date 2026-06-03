@@ -321,6 +321,21 @@ public final class ChildOrderRegistry {
         return capacity - freeTop;
     }
 
+    /**
+     * Returns the maximum orderId currently held in this registry, or 0 if empty.
+     * Used by OmsClusteredService.recomputeNextOrderId() after snapshot restore.
+     * Off hot path — iterates orderIdToSlot.
+     */
+    public long maxOrderId() {
+        final long[] max = {0L};
+        orderIdToSlot.forEach((orderId, slot) -> {
+            if (orderId > max[0]) {
+                max[0] = orderId;
+            }
+        });
+        return max[0];
+    }
+
     // ── Snapshot support ──────────────────────────────────────────────────────
 
     /**

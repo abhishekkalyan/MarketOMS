@@ -57,7 +57,8 @@ public final class OmsNode {
         // ── Configuration ──────────────────────────────────────────────────────
         final int    nodeId          = intEnv("OMS_NODE_ID", 0);
         final String aeronDir        = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-" + nodeId);
-        final String archiveDir      = env("OMS_ARCHIVE_DIR", "/tmp/oms-archive-" + nodeId);
+        final String archiveDir      = env("OMS_ARCHIVE_DIR",
+                System.getProperty("user.home") + "/oms-archive-" + nodeId);
         final long   maxNotional     = longEnv("OMS_MAX_NOTIONAL", 10_000_000L);
         final String symbolsEnv      = env("OMS_SYMBOLS", "AAPL,MSFT,GOOG,AMZN");
         // Format (Aeron 1.40+): <id>,<clientHost:port>,<memberHost:port>,<logHost:port>,<transferHost:port>,<archiveHost:port>
@@ -141,9 +142,15 @@ public final class OmsNode {
                 final ExclusivePublication clientPublication =
                         AeronTransport.createIpcPublication(aeron, AeronTransport.STREAM_OMS_TO_FIX);
 
-                // Subscription for ChildOrderIntent messages from algo-sor (stream 12)
-                final io.aeron.Subscription intentSub =
-                        AeronTransport.createIpcSubscription(aeron, AeronTransport.STREAM_CHILD_INTENTS);
+                // Subscription for ChildOrderIntent messages from algo-sor (stream 12).
+                // Image handlers detect algo-sor connect/disconnect for operational alerting.
+                final io.aeron.Subscription intentSub = aeron.addSubscription(
+                        AeronTransport.IPC_CHANNEL,
+                        AeronTransport.STREAM_CHILD_INTENTS,
+                        image -> log.info("algo-sor connected: sessionId={} position={}",
+                                image.sessionId(), image.position()),
+                        image -> log.warn("algo-sor disconnected: sessionId={} position={}",
+                                image.sessionId(), image.position()));
 
                 // Instantiate the OMS clustered service
                 final OmsClusteredService omsService = new OmsClusteredService(

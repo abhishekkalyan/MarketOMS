@@ -1,5 +1,6 @@
 package com.cobain.oms.cluster;
 
+import com.cobain.oms.core.ChildOrderRegistry;
 import com.cobain.oms.core.OrderBook;
 import com.cobain.oms.core.ValidationEngine;
 import com.cobain.oms.model.OrderLayout;
@@ -27,17 +28,18 @@ import org.agrona.concurrent.UnsafeBuffer;
  * │  minor allocations (FragmentAssembler, lambda) are acceptable here.    │
  * └─────────────────────────────────────────────────────────────────────────┘
  *
- * Snapshot wire format:
+ * Snapshot wire format (version 2):
  *   [0]  version     : int   (4 bytes)  — schema version for forward compat
- *   [4]  orderCount  : int   (4 bytes)  — number of serialized order records
+ *   [4]  orderCount  : int   (4 bytes)  — number of serialized parent order records
  *   [8]  dedupCount  : int   (4 bytes)  — number of dedup map entries
  *  [12]  reserved    : int   (4 bytes)
- *  [16..16+orderCount*80]  order records (ORDER_RECORD_SIZE each)
+ *  [16..16+orderCount*80]  parent order records (MESSAGE_SIZE each)
  *  [16+orderCount*80 .. +dedupCount*16]  dedup entries (clOrdId:8 + orderId:8)
+ *  [.. child registry: int childCount + childCount*128 bytes]
  */
 public final class SnapshotManager {
 
-    public static final int SNAPSHOT_VERSION   = 1;
+    public static final int SNAPSHOT_VERSION   = 2;
     public static final int HEADER_SIZE        = 16;
     public static final int DEDUP_ENTRY_SIZE   = 16; // clOrdId (8) + orderId (8)
 
@@ -46,19 +48,22 @@ public final class SnapshotManager {
     // Worst-case snapshot size:
     //   HEADER (16) + MAX_ORDERS * MESSAGE_SIZE (65536 * 80 = 5,242,880)
     //   + MAX_ORDERS * DEDUP_ENTRY_SIZE (65536 * 16 = 1,048,576)
-    //   ≈ 6.3 MB — sized conservatively to avoid runtime allocation.
+    //   + Integer.BYTES + CHILD_CAPACITY * BLOCK_LENGTH (4 + 32768 * 128 = 4,194,308)
+    //   ≈ 10.5 MB — sized conservatively to avoid runtime allocation.
     //
-    private static final int MAX_SNAPSHOT_BYTES =
+    public static final int MAX_SNAPSHOT_BYTES =
             HEADER_SIZE
             + OrderBook.MAX_ORDERS * OrderLayout.MESSAGE_SIZE
-            + OrderBook.MAX_ORDERS * DEDUP_ENTRY_SIZE;
+            + OrderBook.MAX_ORDERS * DEDUP_ENTRY_SIZE
+            + Integer.BYTES + ChildOrderRegistry.DEFAULT_CAPACITY * OrderLayout.BLOCK_LENGTH;
 
     private final UnsafeBuffer snapshotBuffer =
             new UnsafeBuffer(java.nio.ByteBuffer.allocateDirect(MAX_SNAPSHOT_BYTES));
 
     // ── Fragment handler for snapshot loading (allocated once at construction) ──
-    private OrderBook        restoreTargetBook;
-    private ValidationEngine restoreTargetValidation;
+    private OrderBook           restoreTargetBook;
+    private ValidationEngine    restoreTargetValidation;
+    private ChildOrderRegistry  restoreTargetRegistry;
     private final FragmentHandler snapshotFragmentHandler = this::handleSnapshotFragment;
 
     // ── State for multi-fragment snapshot loading ──────────────────────────────
@@ -67,6 +72,7 @@ public final class SnapshotManager {
     private int  expectedOrders;
     private int  expectedDedupEntries;
     private boolean headerLoaded;
+    private boolean childRegistryRestored;
 
     // ── Serialization ─────────────────────────────────────────────────────────
 
@@ -82,6 +88,7 @@ public final class SnapshotManager {
     public void takeSnapshot(
             final OrderBook orderBook,
             final ValidationEngine validation,
+            final ChildOrderRegistry childRegistry,
             final ExclusivePublication snapshotPublication,
             final IdleStrategy idleStrategy) {
 
@@ -120,6 +127,9 @@ public final class SnapshotManager {
         });
         position = dedupPosition[0];
 
+        // ── Child registry: int count + count * 128-byte records ─────────────
+        position += childRegistry.snapshot(snapshotBuffer, position);
+
         // ── Offer to Aeron (may require multiple offers under back-pressure) ──
         long result;
         do {
@@ -140,6 +150,7 @@ public final class SnapshotManager {
             final Image snapshotImage,
             final OrderBook orderBook,
             final ValidationEngine validation,
+            final ChildOrderRegistry childRegistry,
             final IdleStrategy idleStrategy) {
 
         // Clear all state before restore
@@ -149,11 +160,13 @@ public final class SnapshotManager {
         // Configure restore targets (accessible in the fragment handler)
         this.restoreTargetBook       = orderBook;
         this.restoreTargetValidation = validation;
+        this.restoreTargetRegistry   = childRegistry;
         this.headerLoaded            = false;
         this.loadedOrders            = 0;
         this.loadedDedupEntries      = 0;
         this.expectedOrders          = 0;
         this.expectedDedupEntries    = 0;
+        this.childRegistryRestored   = false;
 
         // Poll until the snapshot image stream is exhausted
         while (!snapshotImage.isEndOfStream()) {
@@ -203,6 +216,15 @@ public final class SnapshotManager {
             restoreTargetValidation.restoreEntry(clOrdId, orderId);
             pos += DEDUP_ENTRY_SIZE;
             loadedDedupEntries++;
+        }
+
+        // Restore child registry (self-describing: int count + count * 128-byte records)
+        if (!childRegistryRestored
+                && loadedDedupEntries == expectedDedupEntries
+                && restoreTargetRegistry != null
+                && pos + Integer.BYTES <= offset + length) {
+            restoreTargetRegistry.restore(buffer, pos, restoreTargetBook);
+            childRegistryRestored = true;
         }
     }
 }
