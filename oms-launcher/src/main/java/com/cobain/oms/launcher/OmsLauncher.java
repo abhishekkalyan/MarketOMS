@@ -5,6 +5,11 @@ import com.cobain.oms.algo.SmartOrderRouter;
 import com.cobain.oms.algo.TwapAlgoEngine;
 import com.cobain.oms.algoagent.AlgoSorAgent;
 import com.cobain.oms.codec.ClusterMessageType;
+import com.cobain.oms.config.ChainedConfigSource;
+import com.cobain.oms.config.ConfigSource;
+import com.cobain.oms.config.EnvVarConfigSource;
+import com.cobain.oms.config.OmsConfig;
+import com.cobain.oms.config.PropertiesFileConfigSource;
 import com.cobain.oms.core.ParentOrderState;
 import com.cobain.oms.transport.AeronTransport;
 import io.aeron.Aeron;
@@ -33,9 +38,12 @@ public final class OmsLauncher {
 
     public static void main(final String[] args) throws Exception {
 
-        final String aeronDir          = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-launcher");
-        final int    algoFragmentLimit = intEnv("OMS_ALGO_FRAGMENT_LIMIT", 10);
-        final int    maxVenues         = intEnv("OMS_MAX_VENUES", SmartOrderRouter.MAX_VENUES);
+        final String aeronDir = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-launcher");
+
+        // Capacity and tuning — resolved via OmsConfig (env vars + optional properties file).
+        final OmsConfig omsConfig       = loadOmsConfig();
+        final int       algoFragmentLimit = omsConfig.algoFragmentLimit;
+        final int       maxVenues         = omsConfig.maxVenues;
 
         log.info("Starting OmsLauncher — Aeron version: {}",
                  io.aeron.Aeron.class.getPackage().getImplementationVersion());
@@ -109,14 +117,27 @@ public final class OmsLauncher {
         agentRunner.thread().join();
     }
 
+    /**
+     * Build the {@link OmsConfig} for the launcher process.
+     *
+     * If {@code OMS_CONFIG_FILE} is set, the file source takes priority over env vars.
+     */
+    private static OmsConfig loadOmsConfig() {
+        final String filePath = System.getenv(OmsConfig.KEY_CONFIG_FILE);
+        final ConfigSource source;
+        if (filePath != null && !filePath.isEmpty()) {
+            source = new ChainedConfigSource(
+                    new PropertiesFileConfigSource(filePath),
+                    EnvVarConfigSource.INSTANCE);
+        } else {
+            source = EnvVarConfigSource.INSTANCE;
+        }
+        return OmsConfig.load(source);
+    }
+
     private static String env(final String key, final String defaultValue) {
         final String v = System.getenv(key);
         return (v != null && !v.isEmpty()) ? v : defaultValue;
-    }
-
-    private static int intEnv(final String key, final int defaultValue) {
-        final String v = System.getenv(key);
-        return (v != null && !v.isEmpty()) ? Integer.parseInt(v) : defaultValue;
     }
 
     private OmsLauncher() {}

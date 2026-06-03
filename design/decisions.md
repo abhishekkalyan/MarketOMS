@@ -98,3 +98,29 @@ All per-process capacity limits are now env-var-configurable with defaults that 
 **Stream ID note (F9):** `AeronTransport` and `ClusterMessageType` both declare `STREAM_CHILD_INTENTS = 12` and the oms-to-algo stream ID (30) as named constants. When sharding is added, shard-scoped stream IDs must be declared per-shard in `AeronTransport`; the existing constants become the base/default shard. See Section 10.2–10.3.
 
 **Buffer sizes (F10):** `OmsClusteredService.algoOutbound` and `egressBuffer` use `ClusterMessageType.IPC_MESSAGE_SIZE` (= 1 + `OrderLayout.MESSAGE_SIZE` = 129 bytes). These are not capacity walls — the message format is fixed regardless of `OMS_MAX_ORDERS`.
+
+---
+
+## Decision 13 — `oms-config` module and pluggable `ConfigSource`
+
+**Context:** Decision 12 introduced env-var-driven capacity configuration but left reading
+scattered across two entry points (`OmsNode`, `OmsLauncher`) with no startup validation
+and no way to supply values from sources other than OS env vars.
+
+**Decision:** Introduce a dedicated `oms-config` Gradle module containing:
+- `ConfigSource` interface — pluggable value supplier (env, file, future: Consul/etcd)
+- `EnvVarConfigSource` — reads OS env vars (default, preserves all existing variable names)
+- `PropertiesFileConfigSource` — loads a `.properties` file; path from `OMS_CONFIG_FILE`
+- `ChainedConfigSource` — file values take priority over env vars when both are present
+- `OmsConfig` — immutable value object; validates all fields at construction; logs each
+  resolved field at INFO with its value and source name
+
+**Dependency rule:** `oms-config` depends only on `oms-codec` and `slf4j-api`.
+`algo-sor` and `oms-harness` must never depend on `oms-config`.
+`oms-core` and `oms-launcher` depend on `oms-config`; they build a `ConfigSource` in their
+entry points (`OmsNode.loadOmsConfig()`, `OmsLauncher.loadOmsConfig()`) and pass the
+resolved `OmsConfig` fields as constructor arguments to components — no component reads
+env vars or `OmsConfig` directly.
+
+**Reversing:** Removing `oms-config` requires reinstating the per-entry-point `intEnv`/
+`longEnv` helpers and losing startup validation and source-name logging.

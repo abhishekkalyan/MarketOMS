@@ -5,6 +5,7 @@ plugins {
 
 dependencies {
     implementation project(':oms-codec')
+    implementation project(':oms-config')
     implementation project(':oms-core')
     implementation project(':algo-sor')
     implementation libs.agrona

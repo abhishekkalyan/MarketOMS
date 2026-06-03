@@ -1,0 +1,38 @@
+# OMS Node configuration example
+#
+# Copy to oms-node.properties, set OMS_CONFIG_FILE=config/oms-node.properties,
+# and launch OmsNode or OmsLauncher. Values here take priority over environment
+# variables when both define the same key (ChainedConfigSource: file > env).
+#
+# All key names match the environment variable names so the same file works as a
+# drop-in alternative to exporting each variable individually.
+#
+# Rules:
+#  - Changing OMS_MAX_ORDERS or OMS_MAX_CHILDREN after a snapshot requires
+#    OMS_ARCHIVE_DELETE_ON_START=true for one restart, then revert to false.
+#  - All integer values must be >= 1; OmsConfig.load() throws IllegalArgumentException
+#    at startup if any value is zero, negative, or non-numeric.
+
+# ── Capacity ──────────────────────────────────────────────────────────────────
+# Maximum parent orders held in OrderBook (off-heap UnsafeBuffer).
+OMS_MAX_ORDERS=65536
+
+# Maximum child orders held in ChildOrderRegistry (off-heap UnsafeBuffer).
+OMS_MAX_CHILDREN=32768
+
+# Maximum venues SmartOrderRouter can distribute a parent order across.
+OMS_MAX_VENUES=10
+
+# ── Tuning ────────────────────────────────────────────────────────────────────
+# Maximum ChildOrderIntent fragments OmsClusteredService polls per work cycle.
+OMS_INTENT_FRAGMENT_LIMIT=20
+
+# Maximum parent-order fragments AlgoSorAgent polls per work cycle.
+OMS_ALGO_FRAGMENT_LIMIT=10
+
+# ── Business rules ────────────────────────────────────────────────────────────
+# Per-order notional limit in base currency units.
+OMS_MAX_NOTIONAL=10000000
+
+# Comma-separated list of permitted symbols (ASCII, max 8 chars each).
+OMS_SYMBOLS=AAPL,MSFT,GOOG,AMZN

@@ -18,6 +18,7 @@ application {
 
 dependencies {
     implementation project(':oms-codec')
+    implementation project(':oms-config')
     implementation libs.agrona
     implementation libs.aeron.client
     implementation libs.aeron.driver
