@@ -33,7 +33,7 @@
 | INVALID_TRANSITION | `-1 (0xFF)` — sentinel for illegal state+event combination | `OrderEvent.INVALID_TRANSITION` |
 | NUM_STATES | 16 — size of first dimension of `TRANSITION_TABLE` | `OrderState.NUM_STATES` |
 | NUM_EVENTS | 10 — size of second dimension of `TRANSITION_TABLE` | `OrderEvent.NUM_EVENTS` |
-| MAX_ORDERS | 65_536 — capacity of `OrderBook` | `OrderBook.MAX_ORDERS` |
+| MAX_ORDERS | 65_536 default — overridden by `OMS_MAX_ORDERS` env var; passed to `OrderBook(int)` constructor | `OrderBook.MAX_ORDERS` |
 | AgentRunner | Agrona single-threaded execution loop for `AlgoSorAgent` | `OmsLauncher` |
 | Raft | Consensus protocol used by Aeron Cluster for log replication | `OmsNode`, `ConsensusModule` |
 | ClusteredService | Aeron Cluster interface implemented by `OmsClusteredService` | `OmsClusteredService` |
@@ -44,5 +44,7 @@
 | STREAM_CHILD_INTENTS | 12 — `algo-sor` → `oms-core` intent stream | `ClusterMessageType` |
 | STREAM_OMS_TO_FIX | 10 — `oms-core` → FIX connectivity engine | `AeronTransport` |
 | STREAM_FIX_TO_OMS | 11 — FIX connectivity engine → `oms-core` | `AeronTransport` |
-| FRAGMENT_LIMIT | 10 — max parent orders polled per `AlgoSorAgent.doWork()` cycle | `AlgoSorAgent` |
-| INTENT_FRAGMENT_LIMIT | 20 — max intents drained per `pollIntents()` call | `OmsClusteredService` |
+| FRAGMENT_LIMIT | 10 default — overridden by `OMS_ALGO_FRAGMENT_LIMIT`; max parent orders polled per `AlgoSorAgent.doWork()` cycle | `AlgoSorAgent` |
+| INTENT_FRAGMENT_LIMIT | 20 default — overridden by `OMS_INTENT_FRAGMENT_LIMIT`; max intents drained per `pollIntents()` call | `OmsClusteredService` |
+| OMS_MAX_CHILDREN | Env var: default 32_768 — `ChildOrderRegistry` capacity | `OmsNode`, `ChildOrderRegistry.DEFAULT_CAPACITY` |
+| OMS_MAX_VENUES | Env var: default 10 — `SmartOrderRouter` + `AlgoSorAgent` venue array size | `OmsLauncher`, `SmartOrderRouter.MAX_VENUES` |

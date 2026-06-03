@@ -111,12 +111,12 @@ the same commit as this document.
 ### LOW
 
 **L1 — OrderBook backing array is on-heap**
-- **Component:** `OrderBook` constructor: `new byte[MAX_ORDERS * OrderLayout.MESSAGE_SIZE]`
+- **Component:** `OrderBook` constructor: `new byte[maxOrders * OrderLayout.MESSAGE_SIZE]`
 - **Gap:** Minor GC pressure from an 8 MB on-heap array. Not on the hot path for GC (long-lived,
   promoted to old gen immediately); does not violate zero-GC invariants on the hot path.
 - **Recommendation:** Replace with `ByteBuffer.allocateDirect()` wrapped in `UnsafeBuffer` for
   consistency with `ChildOrderRegistry`. Not urgent; deferred.
-- **Status:** DOCUMENTED (deferred)
+- **Status:** DOCUMENTED (deferred). OrderBook capacity is now configurable via OMS_MAX_ORDERS.
 
 ---
 
@@ -133,20 +133,37 @@ the same commit as this document.
 
 ---
 
-## Snapshot Format After Fixes (version 2)
+## Snapshot Format (version 3)
 
 ```
-[0-3]   version (int) = 2
+[0-3]   version (int) = 3
 [4-7]   orderCount (int)
 [8-11]  dedupCount (int)
 [12-15] reserved (int) = 0
-[16 .. 16+orderCount*80]          parent order records (MESSAGE_SIZE=80 bytes each)
+[16-19] snapshotMaxOrders (int)   — OMS_MAX_ORDERS at snapshot time
+[20-23] snapshotMaxChildren (int) — OMS_MAX_CHILDREN at snapshot time
+[24 .. 24+orderCount*80]          parent order records (MESSAGE_SIZE=80 bytes each)
 [.. + dedupCount*16]              dedup entries (clOrdId:8 + orderId:8)
 [.. + 4 + childCount*128]         child registry (self-describing: int count + records)
 ```
 
-`MAX_SNAPSHOT_BYTES` = 16 + 65536×80 + 65536×16 + 4 + 32768×128 ≈ 10.5 MB
+Buffer size is computed at runtime in `SnapshotManager(int maxOrders, int maxChildren)`:
+`24 + maxOrders×80 + maxOrders×16 + 4 + maxChildren×128`
+At defaults: ≈ 10.5 MB.
 
-**Migration:** version 1 snapshots are rejected at load time (`IllegalStateException`).
-Wipe the archive directory once on upgrade: set `OMS_ARCHIVE_DELETE_ON_START=true` for
-a single restart, then revert to `false`.
+**Migration from version 2:** version 2 snapshots are rejected at load time (`IllegalStateException`).
+Wipe the archive directory once: set `OMS_ARCHIVE_DELETE_ON_START=true` for one restart, then revert.
+
+**Migration when changing OMS_MAX_ORDERS or OMS_MAX_CHILDREN:** restore validates that
+current capacity ≥ snapshot capacity. Reducing capacity below a snapshot's values requires
+wiping the archive first.
+
+## Satisfied Invariants (added by configurable-capacities)
+
+| ID | Finding | Status |
+|----|---------|--------|
+| S7 | `OrderBook` capacity driven by `OMS_MAX_ORDERS`; no-arg constructor uses `MAX_ORDERS` default | SATISFIED |
+| S8 | `ChildOrderRegistry` capacity driven by `OMS_MAX_CHILDREN`; no-arg constructor uses `DEFAULT_CAPACITY` default | SATISFIED |
+| S9 | `SnapshotManager` buffer allocated at runtime from `maxOrders + maxChildren`; no static `MAX_SNAPSHOT_BYTES` | SATISFIED |
+| S10 | Snapshot version 3 header embeds `snapshotMaxOrders` + `snapshotMaxChildren`; restore rejects incompatible downsizes | SATISFIED |
+| S11 | `ValidationEngine.seenClOrdIds` pre-sized to `maxOrders × 2` at load factor 0.65 — no rehash allocations on hot path | SATISFIED |

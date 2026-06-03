@@ -1,5 +1,7 @@
 package com.cobain.oms.cluster;
 
+import com.cobain.oms.core.ChildOrderRegistry;
+import com.cobain.oms.core.OrderBook;
 import com.cobain.oms.model.OrderFlyweight;
 import com.cobain.oms.transport.AeronTransport;
 import io.aeron.Aeron;
@@ -59,7 +61,10 @@ public final class OmsNode {
         final String aeronDir        = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-" + nodeId);
         final String archiveDir      = env("OMS_ARCHIVE_DIR",
                 System.getProperty("user.home") + "/oms-archive-" + nodeId);
-        final long   maxNotional     = longEnv("OMS_MAX_NOTIONAL", 10_000_000L);
+        final long   maxNotional          = longEnv("OMS_MAX_NOTIONAL", 10_000_000L);
+        final int    maxOrders            = intEnv("OMS_MAX_ORDERS", OrderBook.MAX_ORDERS);
+        final int    maxChildren          = intEnv("OMS_MAX_CHILDREN", ChildOrderRegistry.DEFAULT_CAPACITY);
+        final int    intentFragmentLimit  = intEnv("OMS_INTENT_FRAGMENT_LIMIT", 20);
         final String symbolsEnv      = env("OMS_SYMBOLS", "AAPL,MSFT,GOOG,AMZN");
         // Format (Aeron 1.40+): <id>,<clientHost:port>,<memberHost:port>,<logHost:port>,<transferHost:port>,<archiveHost:port>
         // Separate multiple members with '|'. Port layout per node (base + offset):
@@ -158,6 +163,9 @@ public final class OmsNode {
                         clientPublication,
                         intentSub,
                         maxNotional,
+                        maxOrders,
+                        maxChildren,
+                        intentFragmentLimit,
                         permittedSymbols);
 
                 // ── ClusteredServiceContainer ───────────────────────────────────

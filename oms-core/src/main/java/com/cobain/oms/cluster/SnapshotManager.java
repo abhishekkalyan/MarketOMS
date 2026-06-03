@@ -15,50 +15,41 @@ import org.agrona.concurrent.UnsafeBuffer;
 /**
  * Snapshot serializer / deserializer for Aeron Cluster failover.
  *
- * ┌─────────────────────────────────────────────────────────────────────────┐
- * │  WHY SNAPSHOTS MATTER FOR ZERO-GC DETERMINISM                          │
- * │                                                                         │
- * │  Without snapshots, a new node joining the cluster must replay every   │
- * │  Raft log entry from the beginning of time to reconstruct the in-memory │
- * │  order book state. Snapshots provide a point-in-time compressed capture │
- * │  of the mutable state (order bytes + dedup map) so the catch-up log    │
- * │  replay starts from the snapshot position, not from position 0.        │
- * │                                                                         │
- * │  During snapshot load the cluster is not yet processing messages, so   │
- * │  minor allocations (FragmentAssembler, lambda) are acceptable here.    │
- * └─────────────────────────────────────────────────────────────────────────┘
- *
- * Snapshot wire format (version 2):
- *   [0]  version     : int   (4 bytes)  — schema version for forward compat
- *   [4]  orderCount  : int   (4 bytes)  — number of serialized parent order records
- *   [8]  dedupCount  : int   (4 bytes)  — number of dedup map entries
- *  [12]  reserved    : int   (4 bytes)
- *  [16..16+orderCount*80]  parent order records (MESSAGE_SIZE each)
- *  [16+orderCount*80 .. +dedupCount*16]  dedup entries (clOrdId:8 + orderId:8)
+ * Snapshot wire format (version 3):
+ *   [0-3]   version           : int  — schema version
+ *   [4-7]   orderCount        : int  — number of serialized parent order records
+ *   [8-11]  dedupCount        : int  — number of dedup map entries
+ *  [12-15]  reserved          : int  = 0
+ *  [16-19]  snapshotMaxOrders : int  — capacity this snapshot was taken with
+ *  [20-23]  snapshotMaxChildren : int — capacity this snapshot was taken with
+ *  [24 .. 24+orderCount*80]   parent order records (MESSAGE_SIZE each)
+ *  [.. + dedupCount*16]       dedup entries (clOrdId:8 + orderId:8)
  *  [.. child registry: int childCount + childCount*128 bytes]
  */
 public final class SnapshotManager {
 
-    public static final int SNAPSHOT_VERSION   = 2;
-    public static final int HEADER_SIZE        = 16;
+    public static final int SNAPSHOT_VERSION   = 3;
+    public static final int HEADER_SIZE        = 24; // extended from 16 to include capacity metadata
     public static final int DEDUP_ENTRY_SIZE   = 16; // clOrdId (8) + orderId (8)
 
-    // ── Pre-allocated snapshot serialization buffer ────────────────────────────
-    //
-    // Worst-case snapshot size:
-    //   HEADER (16) + MAX_ORDERS * MESSAGE_SIZE (65536 * 80 = 5,242,880)
-    //   + MAX_ORDERS * DEDUP_ENTRY_SIZE (65536 * 16 = 1,048,576)
-    //   + Integer.BYTES + CHILD_CAPACITY * BLOCK_LENGTH (4 + 32768 * 128 = 4,194,308)
-    //   ≈ 10.5 MB — sized conservatively to avoid runtime allocation.
-    //
-    public static final int MAX_SNAPSHOT_BYTES =
-            HEADER_SIZE
-            + OrderBook.MAX_ORDERS * OrderLayout.MESSAGE_SIZE
-            + OrderBook.MAX_ORDERS * DEDUP_ENTRY_SIZE
-            + Integer.BYTES + ChildOrderRegistry.DEFAULT_CAPACITY * OrderLayout.BLOCK_LENGTH;
+    private final int maxOrders;
+    private final int maxChildren;
+    private final UnsafeBuffer snapshotBuffer;
 
-    private final UnsafeBuffer snapshotBuffer =
-            new UnsafeBuffer(java.nio.ByteBuffer.allocateDirect(MAX_SNAPSHOT_BYTES));
+    public SnapshotManager(final int maxOrders, final int maxChildren) {
+        this.maxOrders  = maxOrders;
+        this.maxChildren = maxChildren;
+        final int bufSize =
+                HEADER_SIZE
+                + maxOrders  * OrderLayout.MESSAGE_SIZE
+                + maxOrders  * DEDUP_ENTRY_SIZE
+                + Integer.BYTES + maxChildren * OrderLayout.BLOCK_LENGTH;
+        this.snapshotBuffer = new UnsafeBuffer(java.nio.ByteBuffer.allocateDirect(bufSize));
+    }
+
+    public SnapshotManager() {
+        this(OrderBook.MAX_ORDERS, ChildOrderRegistry.DEFAULT_CAPACITY);
+    }
 
     // ── Fragment handler for snapshot loading (allocated once at construction) ──
     private OrderBook           restoreTargetBook;
@@ -76,15 +67,6 @@ public final class SnapshotManager {
 
     // ── Serialization ─────────────────────────────────────────────────────────
 
-    /**
-     * Serialize the full OMS state into the Aeron snapshot publication.
-     * Called by {@code OmsClusteredService.onTakeSnapshot()}.
-     *
-     * Iteration uses Agrona's zero-boxing forEach; the total write is one contiguous
-     * buffer offer, minimising the number of Aeron fragments.
-     *
-     * @param idleStrategy passed by the Cluster; must be called during back-pressure
-     */
     public void takeSnapshot(
             final OrderBook orderBook,
             final ValidationEngine validation,
@@ -94,9 +76,6 @@ public final class SnapshotManager {
 
         int position = 0;
 
-        // ── Build the snapshot into the pre-allocated buffer ──────────────────
-
-        // Header: version, order count, dedup count, reserved
         final int orderCount = orderBook.openOrderCount();
         final int dedupCount = validation.seenClOrdIds().size();
 
@@ -104,10 +83,11 @@ public final class SnapshotManager {
         snapshotBuffer.putInt(4,  orderCount);
         snapshotBuffer.putInt(8,  dedupCount);
         snapshotBuffer.putInt(12, 0); // reserved
+        snapshotBuffer.putInt(16, maxOrders);
+        snapshotBuffer.putInt(20, maxChildren);
         position = HEADER_SIZE;
 
-        // ── Orders: bulk copy each slot's 80 bytes ────────────────────────────
-        final int[] orderPosition = {position}; // effectively-final wrapper for lambda
+        final int[] orderPosition = {position};
         orderBook.forEachActiveSlot(slot -> {
             snapshotBuffer.putBytes(
                     orderPosition[0],
@@ -118,7 +98,6 @@ public final class SnapshotManager {
         });
         position = orderPosition[0];
 
-        // ── Dedup map: clOrdId + orderId per entry ────────────────────────────
         final int[] dedupPosition = {position};
         validation.seenClOrdIds().forEach((clOrdId, orderId) -> {
             snapshotBuffer.putLong(dedupPosition[0],     clOrdId);
@@ -127,10 +106,8 @@ public final class SnapshotManager {
         });
         position = dedupPosition[0];
 
-        // ── Child registry: int count + count * 128-byte records ─────────────
         position += childRegistry.snapshot(snapshotBuffer, position);
 
-        // ── Offer to Aeron (may require multiple offers under back-pressure) ──
         long result;
         do {
             result = snapshotPublication.offer(snapshotBuffer, 0, position);
@@ -140,12 +117,6 @@ public final class SnapshotManager {
 
     // ── Deserialization ───────────────────────────────────────────────────────
 
-    /**
-     * Restore OMS state from a snapshot image.
-     * Called by {@code OmsClusteredService.onStart()} when snapshotImage is non-null.
-     *
-     * Reads fragment-by-fragment using Aeron's image poll loop until end-of-stream.
-     */
     public void loadSnapshot(
             final Image snapshotImage,
             final OrderBook orderBook,
@@ -153,11 +124,9 @@ public final class SnapshotManager {
             final ChildOrderRegistry childRegistry,
             final IdleStrategy idleStrategy) {
 
-        // Clear all state before restore
         orderBook.reset();
         validation.reset();
 
-        // Configure restore targets (accessible in the fragment handler)
         this.restoreTargetBook       = orderBook;
         this.restoreTargetValidation = validation;
         this.restoreTargetRegistry   = childRegistry;
@@ -168,14 +137,13 @@ public final class SnapshotManager {
         this.expectedDedupEntries    = 0;
         this.childRegistryRestored   = false;
 
-        // Poll until the snapshot image stream is exhausted
         while (!snapshotImage.isEndOfStream()) {
             final int fragments = snapshotImage.poll(snapshotFragmentHandler, 10);
             idleStrategy.idle(fragments);
         }
     }
 
-    // ── Fragment handler (called by Aeron during snapshot load) ───────────────
+    // ── Fragment handler ──────────────────────────────────────────────────────
 
     private void handleSnapshotFragment(
             final DirectBuffer buffer,
@@ -185,22 +153,37 @@ public final class SnapshotManager {
 
         int pos = offset;
 
-        // First fragment: read the header
         if (!headerLoaded) {
             if (length < HEADER_SIZE) {
                 throw new IllegalStateException("Snapshot header too short: " + length);
             }
             final int version = buffer.getInt(pos);
             if (version != SNAPSHOT_VERSION) {
-                throw new IllegalStateException("Unsupported snapshot version: " + version);
+                throw new IllegalStateException("Unsupported snapshot version: " + version
+                        + " (expected " + SNAPSHOT_VERSION + "). Wipe archive with "
+                        + "OMS_ARCHIVE_DELETE_ON_START=true and restart.");
             }
             expectedOrders       = buffer.getInt(pos + 4);
             expectedDedupEntries = buffer.getInt(pos + 8);
+            // pos + 12 = reserved
+            final int snapMaxOrders   = buffer.getInt(pos + 16);
+            final int snapMaxChildren = buffer.getInt(pos + 20);
+            if (snapMaxOrders > maxOrders) {
+                throw new IllegalStateException(
+                        "Snapshot maxOrders=" + snapMaxOrders
+                        + " exceeds current OMS_MAX_ORDERS=" + maxOrders
+                        + ". Increase OMS_MAX_ORDERS or wipe archive.");
+            }
+            if (snapMaxChildren > maxChildren) {
+                throw new IllegalStateException(
+                        "Snapshot maxChildren=" + snapMaxChildren
+                        + " exceeds current OMS_MAX_CHILDREN=" + maxChildren
+                        + ". Increase OMS_MAX_CHILDREN or wipe archive.");
+            }
             pos += HEADER_SIZE;
             headerLoaded = true;
         }
 
-        // Restore orders
         while (loadedOrders < expectedOrders
                && pos + OrderLayout.MESSAGE_SIZE <= offset + length) {
             restoreTargetBook.restoreOrder(buffer, pos);
@@ -208,7 +191,6 @@ public final class SnapshotManager {
             loadedOrders++;
         }
 
-        // Restore dedup entries
         while (loadedDedupEntries < expectedDedupEntries
                && pos + DEDUP_ENTRY_SIZE <= offset + length) {
             final long clOrdId = buffer.getLong(pos);
@@ -218,7 +200,6 @@ public final class SnapshotManager {
             loadedDedupEntries++;
         }
 
-        // Restore child registry (self-describing: int count + count * 128-byte records)
         if (!childRegistryRestored
                 && loadedDedupEntries == expectedDedupEntries
                 && restoreTargetRegistry != null

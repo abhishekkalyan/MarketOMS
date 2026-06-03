@@ -75,10 +75,9 @@ public final class ValidationEngine {
 
     private static final long DEDUP_MISSING = Long.MIN_VALUE;
 
-    public ValidationEngine(final long maxNotional, final long... permittedSymbolLongs) {
+    public ValidationEngine(final long maxNotional, final int maxOrders, final long... permittedSymbolLongs) {
         this.maxNotional      = maxNotional;
-        this.seenClOrdIds     = new Long2LongHashMap(DEDUP_MISSING);
-        // LongHashSet(int proposedCapacity) — simplest stable constructor across Agrona versions.
+        this.seenClOrdIds     = new Long2LongHashMap(maxOrders * 2, 0.65f, DEDUP_MISSING);
         this.permittedSymbols = new LongHashSet(Math.max(16, permittedSymbolLongs.length * 2));
         for (final long sym : permittedSymbolLongs) {
             permittedSymbols.add(sym);

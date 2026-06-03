@@ -78,3 +78,23 @@ Symbol-partitioned sharding (not yet implemented). Shard isolation would use sep
 ### 10.4 Cross-shard concerns
 
 Symbol-scoped: fills always arrive for the same symbol as the parent → same shard. Cross-shard risk: account-level notional limits span symbols — not yet implemented.
+
+---
+
+## Capacity Constants — Decision 12
+
+All per-process capacity limits are now env-var-configurable with defaults that match the prior hard-coded values:
+
+| Env Var | Default | Owned by |
+|---------|---------|----------|
+| `OMS_MAX_ORDERS` | 65_536 | `OrderBook` |
+| `OMS_MAX_CHILDREN` | 32_768 | `ChildOrderRegistry` |
+| `OMS_INTENT_FRAGMENT_LIMIT` | 20 | `OmsClusteredService` |
+| `OMS_ALGO_FRAGMENT_LIMIT` | 10 | `AlgoSorAgent` |
+| `OMS_MAX_VENUES` | 10 | `SmartOrderRouter` / `AlgoSorAgent` |
+
+**Constraint:** Changing `OMS_MAX_ORDERS` or `OMS_MAX_CHILDREN` after a snapshot has been taken requires wiping the archive once (`OMS_ARCHIVE_DELETE_ON_START=true` for one restart, then revert to `false`). The snapshot version 3 header embeds the capacity values the snapshot was taken with; restore fails with a clear error if current capacity is smaller than the snapshot capacity.
+
+**Stream ID note (F9):** `AeronTransport` and `ClusterMessageType` both declare `STREAM_CHILD_INTENTS = 12` and the oms-to-algo stream ID (30) as named constants. When sharding is added, shard-scoped stream IDs must be declared per-shard in `AeronTransport`; the existing constants become the base/default shard. See Section 10.2–10.3.
+
+**Buffer sizes (F10):** `OmsClusteredService.algoOutbound` and `egressBuffer` use `ClusterMessageType.IPC_MESSAGE_SIZE` (= 1 + `OrderLayout.MESSAGE_SIZE` = 129 bytes). These are not capacity walls — the message format is fixed regardless of `OMS_MAX_ORDERS`.

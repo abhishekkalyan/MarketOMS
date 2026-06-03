@@ -33,19 +33,18 @@ import java.util.function.IntConsumer;
  */
 public final class OrderBook {
 
-    /** Maximum number of simultaneously open orders.  Power-of-2 for potential bitmask ops. */
+    /** Default maximum number of simultaneously open orders. Power-of-2 for potential bitmask ops. */
     public static final int MAX_ORDERS = 65_536;
 
     /** Sentinel: slot is free / orderId not found. */
     static final long EMPTY = Long.MIN_VALUE;
 
+    private final int maxOrders;
+
     // ── Backing storage ───────────────────────────────────────────────────────
 
-    /** One large contiguous byte array for all order records. */
-    private final byte[] backingArray = new byte[MAX_ORDERS * OrderLayout.MESSAGE_SIZE];
-
-    /** UnsafeBuffer wraps the backing array with zero-copy DirectBuffer semantics. */
-    private final UnsafeBuffer orderBuffer = new UnsafeBuffer(backingArray);
+    private final byte[] backingArray;
+    private final UnsafeBuffer orderBuffer;
 
     // ── Indices — zero-GC Agrona primitive maps ────────────────────────────────
 
@@ -57,17 +56,12 @@ public final class OrderBook {
 
     // ── Free-slot management: a simple O(1) stack ─────────────────────────────
 
-    /**
-     * Stack of free slot indices. Initialised to [MAX_ORDERS-1, MAX_ORDERS-2, ..., 1, 0]
-     * so the first allocation returns slot 0 (LIFO, but order doesn't matter here).
-     */
-    private final int[] freeSlots = new int[MAX_ORDERS];
-    private int freeTop; // index of the next element to pop; 0 = stack is empty
+    private final int[] freeSlots;
+    private int freeTop;
 
     // ── Per-slot quick-lookup array (avoids iterating the map to check occupation) ──
 
-    /** slotToOrderId[slot] = orderId stored there, or 0L if free. */
-    private final long[] slotToOrderId = new long[MAX_ORDERS];
+    private final long[] slotToOrderId;
 
     // ── Reusable flyweight: allocated once, re-wrapped on every access ─────────
 
@@ -77,13 +71,23 @@ public final class OrderBook {
     /** Separate flyweight for snapshot iteration so nested wrap() calls don't clobber. */
     private final OrderFlyweight snapshotFlyweight = new OrderFlyweight();
 
-    public OrderBook() {
-        // Initialise the free-slot stack: push all slot indices 0..MAX_ORDERS-1.
-        freeTop = MAX_ORDERS;
-        for (int i = 0; i < MAX_ORDERS; i++) {
-            freeSlots[i] = i; // slot i is at position i in the stack
+    public OrderBook(final int maxOrders) {
+        this.maxOrders    = maxOrders;
+        this.backingArray = new byte[maxOrders * OrderLayout.MESSAGE_SIZE];
+        this.orderBuffer  = new UnsafeBuffer(backingArray);
+        this.freeSlots    = new int[maxOrders];
+        this.slotToOrderId = new long[maxOrders];
+        this.freeTop      = maxOrders;
+        for (int i = 0; i < maxOrders; i++) {
+            freeSlots[i] = i;
         }
     }
+
+    public OrderBook() {
+        this(MAX_ORDERS);
+    }
+
+    public int maxOrders() { return maxOrders; }
 
     // ── Slot allocation / release ─────────────────────────────────────────────
 
@@ -216,8 +220,8 @@ public final class OrderBook {
     public void reset() {
         clOrdIdToSlot.clear();
         orderIdToSlot.clear();
-        freeTop = MAX_ORDERS;
-        for (int i = 0; i < MAX_ORDERS; i++) {
+        freeTop = maxOrders;
+        for (int i = 0; i < maxOrders; i++) {
             freeSlots[i] = i;
             slotToOrderId[i] = 0L;
         }
