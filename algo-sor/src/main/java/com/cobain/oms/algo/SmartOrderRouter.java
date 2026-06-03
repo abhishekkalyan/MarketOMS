@@ -22,12 +22,21 @@ public final class SmartOrderRouter {
 
     public static final int MAX_VENUES = 10;
 
+    private final int maxVenues;
+
     // ── Pre-allocated intent — reused per route() call ────────────────────────
     private final ChildOrderIntentFlyweight intent;
 
-    public SmartOrderRouter() {
-        this.intent = ChildOrderIntentFlyweight.allocate();
+    public SmartOrderRouter(final int maxVenues) {
+        this.maxVenues = maxVenues;
+        this.intent    = ChildOrderIntentFlyweight.allocate();
     }
+
+    public SmartOrderRouter() {
+        this(MAX_VENUES);
+    }
+
+    public int maxVenues() { return maxVenues; }
 
     // ── Core routing ──────────────────────────────────────────────────────────
 

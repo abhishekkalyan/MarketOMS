@@ -33,8 +33,9 @@ public final class OmsLauncher {
 
     public static void main(final String[] args) throws Exception {
 
-        final String aeronDir        = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-launcher");
+        final String aeronDir          = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-launcher");
         final int    algoFragmentLimit = intEnv("OMS_ALGO_FRAGMENT_LIMIT", 10);
+        final int    maxVenues         = intEnv("OMS_MAX_VENUES", SmartOrderRouter.MAX_VENUES);
 
         log.info("Starting OmsLauncher — Aeron version: {}",
                  io.aeron.Aeron.class.getPackage().getImplementationVersion());
@@ -70,7 +71,7 @@ public final class OmsLauncher {
                 AeronTransport.createIpcPublication(aeron, ClusterMessageType.STREAM_CHILD_INTENTS);
 
         // ── 4. Pre-allocate algo engines and SOR ───────────────────────────────
-        final SmartOrderRouter  sor           = new SmartOrderRouter();
+        final SmartOrderRouter  sor           = new SmartOrderRouter(maxVenues);
         final IcebergAlgoEngine icebergEngine = new IcebergAlgoEngine(10L);
         final TwapAlgoEngine    twapEngine    = new TwapAlgoEngine();
 
@@ -81,7 +82,8 @@ public final class OmsLauncher {
                 icebergEngine,
                 twapEngine,
                 sor,
-                algoFragmentLimit);
+                algoFragmentLimit,
+                maxVenues);
 
         final AgentRunner agentRunner = new AgentRunner(
                 new BusySpinIdleStrategy(),

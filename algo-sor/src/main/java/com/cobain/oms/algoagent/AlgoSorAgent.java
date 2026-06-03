@@ -67,9 +67,9 @@ public final class AlgoSorAgent implements Agent, FragmentHandler {
                                       + ChildOrderIntentFlyweight.BLOCK_LENGTH]);
 
     // ── Mock market depth — updated by a market data handler in production ────
-    private final int[]  venueIds    = new int[SmartOrderRouter.MAX_VENUES];
-    private final long[] venuePrices = new long[SmartOrderRouter.MAX_VENUES];
-    private final long[] venueQtys   = new long[SmartOrderRouter.MAX_VENUES];
+    private final int[]  venueIds;
+    private final long[] venuePrices;
+    private final long[] venueQtys;
 
     public AlgoSorAgent(
             final Subscription         parentOrderSub,
@@ -77,7 +77,8 @@ public final class AlgoSorAgent implements Agent, FragmentHandler {
             final IcebergAlgoEngine     icebergEngine,
             final TwapAlgoEngine        twapEngine,
             final SmartOrderRouter      sor,
-            final int                   fragmentLimit) {
+            final int                   fragmentLimit,
+            final int                   maxVenues) {
 
         this.fragmentLimit   = fragmentLimit;
         this.parentOrderSub  = parentOrderSub;
@@ -85,6 +86,9 @@ public final class AlgoSorAgent implements Agent, FragmentHandler {
         this.icebergEngine   = icebergEngine;
         this.twapEngine      = twapEngine;
         this.sor             = sor;
+        this.venueIds        = new int[maxVenues];
+        this.venuePrices     = new long[maxVenues];
+        this.venueQtys       = new long[maxVenues];
 
         // Pre-write the header bytes — they never change
         intentOfferBuffer.putByte(ClusterMessageType.OFFSET_MSG_TYPE,
@@ -178,7 +182,7 @@ public final class AlgoSorAgent implements Agent, FragmentHandler {
         venueIds[0]    = 1;
         venuePrices[0] = 1_000_000L; // £100.0000 in fixed-point x10000
         venueQtys[0]   = Long.MAX_VALUE / 2; // effectively unlimited
-        for (int i = 1; i < SmartOrderRouter.MAX_VENUES; i++) {
+        for (int i = 1; i < venueIds.length; i++) {
             venueIds[i] = 0;
             venueQtys[i] = 0L;
         }
@@ -186,7 +190,7 @@ public final class AlgoSorAgent implements Agent, FragmentHandler {
 
     private int countActiveVenues() {
         int count = 0;
-        for (int i = 0; i < SmartOrderRouter.MAX_VENUES; i++) {
+        for (int i = 0; i < venueIds.length; i++) {
             if (venueIds[i] > 0 && venueQtys[i] > 0L) {
                 count++;
             } else {
