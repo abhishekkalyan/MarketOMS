@@ -108,7 +108,7 @@ public final class OmsClusteredService implements ClusteredService {
         this.intentFragmentLimit = intentFragmentLimit;
         this.orderBook          = new OrderBook(maxOrders);
         this.validationEngine   = new ValidationEngine(maxNotional, maxOrders, permittedSymbols);
-        this.snapshotManager    = new SnapshotManager();
+        this.snapshotManager    = new SnapshotManager(maxOrders, maxChildren);
         this.algoSorPublication = algoSorPublication;
         this.fixEncoder         = new FIXMessageEncoder(clientPublication);
         this.childRegistry      = new ChildOrderRegistry(maxChildren);
