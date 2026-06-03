@@ -1,7 +1,10 @@
 package com.cobain.oms.cluster;
 
-import com.cobain.oms.core.ChildOrderRegistry;
-import com.cobain.oms.core.OrderBook;
+import com.cobain.oms.config.ChainedConfigSource;
+import com.cobain.oms.config.ConfigSource;
+import com.cobain.oms.config.EnvVarConfigSource;
+import com.cobain.oms.config.OmsConfig;
+import com.cobain.oms.config.PropertiesFileConfigSource;
 import com.cobain.oms.model.OrderFlyweight;
 import com.cobain.oms.transport.AeronTransport;
 import io.aeron.Aeron;
@@ -57,15 +60,21 @@ public final class OmsNode {
     public static void main(final String[] args) throws Exception {
 
         // ── Configuration ──────────────────────────────────────────────────────
-        final int    nodeId          = intEnv("OMS_NODE_ID", 0);
-        final String aeronDir        = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-" + nodeId);
-        final String archiveDir      = env("OMS_ARCHIVE_DIR",
+        // Infrastructure-specific values (Aeron dirs, cluster topology) stay here
+        // because oms-config deliberately has no Aeron dependency.
+        final int    nodeId     = intEnv("OMS_NODE_ID", 0);
+        final String aeronDir   = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-" + nodeId);
+        final String archiveDir = env("OMS_ARCHIVE_DIR",
                 System.getProperty("user.home") + "/oms-archive-" + nodeId);
-        final long   maxNotional          = longEnv("OMS_MAX_NOTIONAL", 10_000_000L);
-        final int    maxOrders            = intEnv("OMS_MAX_ORDERS", OrderBook.MAX_ORDERS);
-        final int    maxChildren          = intEnv("OMS_MAX_CHILDREN", ChildOrderRegistry.DEFAULT_CAPACITY);
-        final int    intentFragmentLimit  = intEnv("OMS_INTENT_FRAGMENT_LIMIT", 20);
-        final String symbolsEnv      = env("OMS_SYMBOLS", "AAPL,MSFT,GOOG,AMZN");
+
+        // Capacity and tuning values — resolved via OmsConfig (supports env vars
+        // and optional properties file pointed to by OMS_CONFIG_FILE).
+        final OmsConfig omsConfig = loadOmsConfig();
+        final int    maxOrders           = omsConfig.maxOrders;
+        final int    maxChildren         = omsConfig.maxChildren;
+        final int    intentFragmentLimit = omsConfig.intentFragmentLimit;
+        final long   maxNotional         = omsConfig.maxNotional;
+        final String symbolsEnv          = omsConfig.symbols;
         // Format (Aeron 1.40+): <id>,<clientHost:port>,<memberHost:port>,<logHost:port>,<transferHost:port>,<archiveHost:port>
         // Separate multiple members with '|'. Port layout per node (base + offset):
         //   clientPort=9000, memberPort=9001, logPort=9002, transferPort=9003, archiveControlPort=8010
@@ -196,6 +205,26 @@ public final class OmsNode {
 
     // ── Configuration helpers ─────────────────────────────────────────────────
 
+    /**
+     * Build the {@link OmsConfig} for this node.
+     *
+     * If {@code OMS_CONFIG_FILE} is set, the file source takes priority over env
+     * vars (so a properties file can override anything). When the env var is absent,
+     * only the env-var source is used.
+     */
+    private static OmsConfig loadOmsConfig() {
+        final String filePath = System.getenv(OmsConfig.KEY_CONFIG_FILE);
+        final ConfigSource source;
+        if (filePath != null && !filePath.isEmpty()) {
+            source = new ChainedConfigSource(
+                    new PropertiesFileConfigSource(filePath),
+                    EnvVarConfigSource.INSTANCE);
+        } else {
+            source = EnvVarConfigSource.INSTANCE;
+        }
+        return OmsConfig.load(source);
+    }
+
     private static MediaDriver.Context buildMediaDriverContext(final String aeronDir) {
         return new MediaDriver.Context()
                 .aeronDirectoryName(aeronDir)
@@ -243,11 +272,6 @@ public final class OmsNode {
     private static int intEnv(final String key, final int defaultValue) {
         final String v = System.getenv(key);
         return (v != null && !v.isEmpty()) ? Integer.parseInt(v) : defaultValue;
-    }
-
-    private static long longEnv(final String key, final long defaultValue) {
-        final String v = System.getenv(key);
-        return (v != null && !v.isEmpty()) ? Long.parseLong(v) : defaultValue;
     }
 
     private static boolean boolEnv(final String key, final boolean defaultValue) {
