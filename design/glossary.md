@@ -48,3 +48,6 @@
 | INTENT_FRAGMENT_LIMIT | 20 default — overridden by `OMS_INTENT_FRAGMENT_LIMIT`; max intents drained per `pollIntents()` call | `OmsClusteredService` |
 | OMS_MAX_CHILDREN | Env var: default 32_768 — `ChildOrderRegistry` capacity | `OmsNode`, `ChildOrderRegistry.DEFAULT_CAPACITY` |
 | OMS_MAX_VENUES | Env var: default 10 — `SmartOrderRouter` + `AlgoSorAgent` venue array size | `OmsLauncher`, `SmartOrderRouter.MAX_VENUES` |
+| OmsConfig | Immutable value object holding all capacity and tuning values; validated and logged at startup by `OmsConfig.load(ConfigSource)` | `oms-config` module |
+| ConfigSource | Pluggable interface for raw string value resolution (`EnvVarConfigSource`, `PropertiesFileConfigSource`, `ChainedConfigSource`) | `oms-config` module |
+| OMS_CONFIG_FILE | Optional env var: path to a `.properties` file; when set, file values take priority over OS env vars via `ChainedConfigSource` | `OmsNode.loadOmsConfig()`, `OmsLauncher.loadOmsConfig()` |
