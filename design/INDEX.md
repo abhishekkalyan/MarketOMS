@@ -38,6 +38,7 @@ Never add the same fact to two files.
 | `decisions.md` | Design decision log: what was decided, alternatives rejected, consequence of reversing |
 | `glossary.md` | Domain terms, constant values, class references, package names |
 | `resilience-review.md` | Structured resilience findings: data loss gaps, SPOF analysis, satisfied invariants |
+| `../skills/` | Reusable agent workflows (SKILL.md files) |
 
 ## Post-Change Verification
 

@@ -324,3 +324,14 @@ All modules that use Agrona (including `oms-harness`) must include all three fla
 ```
 
 Omitting `jdk.internal.misc` causes `IllegalAccessError` from `UnsafeApi` at startup even if the other two are present. Set in each module's `build.gradle` under `application { applicationDefaultJvmArgs = [...] }`.
+
+---
+
+## Skills
+
+All reusable agent workflows live in `skills/` at the repo root.
+Load the relevant SKILL.md before starting any matching task.
+
+| Task keywords | Skill to load |
+|---|---|
+| scaling, capacity, MAX_ORDERS, MAX_CHILDREN, fragment limit, snapshot size, configurable limit | `skills/scaling-audit/SKILL.md` |
