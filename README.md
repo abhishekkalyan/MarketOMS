@@ -313,10 +313,13 @@ INFO  OmsClusteredService - New leadership term: leaderMemberId=0 termId=0
 | `OMS_ARCHIVE_LOCAL_RESPONSE_CHANNEL` | `aeron:ipc` | Archive response channel for in-process clients |
 | `OMS_ARCHIVE_REPLICATION_CHANNEL` | `aeron:udp?endpoint=localhost:0` | Endpoint peers use for log replication. Use a fixed port in multi-node |
 | `OMS_ARCHIVE_DELETE_ON_START` | `false` | `true` wipes all archive and cluster state on restart. Use only for test environments |
+| `OMS_MAX_ORDERS` | `65536` | Maximum parent orders held in `OrderBook` (off-heap pre-allocation). Increase for higher throughput; requires `OMS_ARCHIVE_DELETE_ON_START=true` once after change |
+| `OMS_MAX_CHILDREN` | `32768` | Maximum child orders held in `ChildOrderRegistry` (off-heap pre-allocation). Same migration rule as `OMS_MAX_ORDERS` |
+| `OMS_INTENT_FRAGMENT_LIMIT` | `20` | Maximum `ChildOrderIntent` fragments polled per work cycle by `OmsClusteredService` |
 
 > **Production archive dir.** The default `~/oms-archive-<nodeId>` survives reboots. For production, set `OMS_ARCHIVE_DIR` to a dedicated persistent mount (separate disk from the OS, monitored for space). Never point this at `/tmp` or any tmpfs path.
 
-> **Snapshot migration.** Snapshot format changed to version 2 (adds `ChildOrderRegistry`). On first deployment from an older build: set `OMS_ARCHIVE_DELETE_ON_START=true` for one restart, then revert to `false`.
+> **Snapshot migration.** Snapshot format is now version 3 (header extended to 24 bytes — embeds `snapshotMaxOrders` and `snapshotMaxChildren` at offsets 16 and 20). On first deployment from a pre-v3 build, or after changing `OMS_MAX_ORDERS`/`OMS_MAX_CHILDREN`: set `OMS_ARCHIVE_DELETE_ON_START=true` for one restart, then revert to `false`.
 
 **`OMS_CLUSTER_MEMBERS` format:**
 ```
@@ -336,6 +339,8 @@ Three-node example:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OMS_AERON_DIR` | `/dev/shm/oms-aeron-launcher` | Aeron dir for the launcher process (must differ from OmsNode's dir) |
+| `OMS_ALGO_FRAGMENT_LIMIT` | `10` | Maximum parent-order fragments polled per work cycle by `AlgoSorAgent` |
+| `OMS_MAX_VENUES` | `10` | Maximum venues `SmartOrderRouter` can split across (off-heap arrays pre-allocated at this size) |
 
 ---
 
