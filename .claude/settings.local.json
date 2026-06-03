@@ -18,7 +18,22 @@
       "Bash(bash run-harness.sh)",
       "Bash(./gradlew :oms-harness:installDist --quiet)",
       "Bash(./gradlew :oms-core:clean :oms-core:installDist)",
-      "Bash(./gradlew :oms-core:clean :oms-core:installDist --quiet)"
+      "Bash(./gradlew :oms-core:clean :oms-core:installDist --quiet)",
+      "Bash(./gradlew test *)",
+      "Bash(./gradlew :oms-codec:compileJava :oms-core:compileJava)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(./gradlew :oms-core:build :oms-launcher:build)",
+      "Bash(./gradlew :oms-harness:dependencies --configuration compileClasspath)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(./gradlew *)"
     ]
+  },
+  "env": {
+    "GIT_AUTHOR_NAME": "Abhishek Kalyan",
+    "GIT_AUTHOR_EMAIL": "abhishekkalyan.dev@gmail.com",
+    "GIT_COMMITTER_NAME": "Abhishek Kalyan",
+    "GIT_COMMITTER_EMAIL": "abhishekkalyan.dev@gmail.com"
   }
 }
