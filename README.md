@@ -22,13 +22,14 @@ A sell-side Order Management System (OMS) built for deterministic sub-millisecon
 ```
 market-oms/
 ├── oms-codec/       Binary contract — shared flyweights, field offsets, ClusterMessageType
+├── oms-config/      Centralised configuration — OmsConfig, ConfigSource, ChainedConfigSource
 ├── oms-core/        Order state machine, validation, Aeron Cluster service, OmsNode entry point
 ├── algo-sor/        Algo execution engines and Smart Order Router (pure computation, stateless)
 ├── oms-launcher/    Process entry point for algo-sor — wires AlgoSorAgent, starts AgentRunner
 └── oms-harness/     Black-box integration test harness — injects orders via Aeron Cluster client API
 ```
 
-**Hard module boundary:** `algo-sor` must never depend on `oms-core`. The only shared module is `oms-codec`. All inter-module communication is over Aeron IPC at runtime.
+**Hard module boundary:** `algo-sor` must never depend on `oms-core` or `oms-config`. The only shared module is `oms-codec`. All inter-module communication is over Aeron IPC at runtime.
 
 ### Component Interactions
 
@@ -313,6 +314,7 @@ INFO  OmsClusteredService - New leadership term: leaderMemberId=0 termId=0
 | `OMS_ARCHIVE_LOCAL_RESPONSE_CHANNEL` | `aeron:ipc` | Archive response channel for in-process clients |
 | `OMS_ARCHIVE_REPLICATION_CHANNEL` | `aeron:udp?endpoint=localhost:0` | Endpoint peers use for log replication. Use a fixed port in multi-node |
 | `OMS_ARCHIVE_DELETE_ON_START` | `false` | `true` wipes all archive and cluster state on restart. Use only for test environments |
+| `OMS_CONFIG_FILE` | _(not set)_ | Optional path to a `.properties` file (e.g. `config/oms-node.properties`). File values take priority over OS env vars via `ChainedConfigSource`. Keys use the same names as the env vars below. See `config/oms-node.properties.example` |
 | `OMS_MAX_ORDERS` | `65536` | Maximum parent orders held in `OrderBook` (off-heap pre-allocation). Increase for higher throughput; requires `OMS_ARCHIVE_DELETE_ON_START=true` once after change |
 | `OMS_MAX_CHILDREN` | `32768` | Maximum child orders held in `ChildOrderRegistry` (off-heap pre-allocation). Same migration rule as `OMS_MAX_ORDERS` |
 | `OMS_INTENT_FRAGMENT_LIMIT` | `20` | Maximum `ChildOrderIntent` fragments polled per work cycle by `OmsClusteredService` |
@@ -339,6 +341,7 @@ Three-node example:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OMS_AERON_DIR` | `/dev/shm/oms-aeron-launcher` | Aeron dir for the launcher process (must differ from OmsNode's dir) |
+| `OMS_CONFIG_FILE` | _(not set)_ | Optional path to a `.properties` file; same semantics as for OmsNode above |
 | `OMS_ALGO_FRAGMENT_LIMIT` | `10` | Maximum parent-order fragments polled per work cycle by `AlgoSorAgent` |
 | `OMS_MAX_VENUES` | `10` | Maximum venues `SmartOrderRouter` can split across (off-heap arrays pre-allocated at this size) |
 
