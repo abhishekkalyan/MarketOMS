@@ -296,17 +296,57 @@ INFO  OmsClusteredService - New leadership term: leaderMemberId=0 termId=0
 
 `run-algo-sor.sh` connects over Aeron IPC. The node must be running before the launcher starts.
 
-### Environment Variables
+### Configuration
 
-#### OmsNode (`oms-core`)
+#### How configuration works — `oms-config` module
+
+All capacity and tuning values are resolved through the `oms-config` module rather than being read ad-hoc from environment variables in each entry point. The design has three layers:
+
+```
+ConfigSource (interface)
+  ├── EnvVarConfigSource     — reads OS environment variables (default)
+  ├── PropertiesFileConfigSource — reads a .properties file
+  └── ChainedConfigSource    — tries sources in order; first non-null value wins
+            │
+            ▼
+      OmsConfig              — immutable value object; validates all fields;
+                               logs every resolved value at INFO with its source name
+```
+
+At startup each entry point calls `OmsConfig.load(ConfigSource)`, which:
+1. Resolves every field from the supplied source
+2. Throws `IllegalArgumentException` immediately for any invalid value (zero, negative, non-numeric, or blank symbol list) — the node never starts with a bad config
+3. Logs each field at INFO so the active configuration is always auditable:
+```
+[OmsConfig] OMS_MAX_ORDERS = 65536  (source: env)
+[OmsConfig] OMS_MAX_VENUES = 20     (source: file:config/oms-node.properties)
+```
+
+#### Option 1 — Environment variables (default)
+
+No extra setup required. Set any subset of the variables below; unset variables use the built-in defaults.
+
+#### Option 2 — Properties file
+
+Create a `.properties` file (copy from `config/oms-node.properties.example`) and point `OMS_CONFIG_FILE` at it:
+
+```bash
+OMS_CONFIG_FILE=config/oms-node.properties ./run-oms-node.sh
+```
+
+File values take priority over OS environment variables via `ChainedConfigSource`. Keys in the file use the same names as the environment variables (`OMS_MAX_ORDERS=131072`, etc.).
+
+---
+
+#### OmsNode (`oms-core`) — all variables
+
+**Aeron infrastructure** (read directly in `OmsNode`; not part of `OmsConfig`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OMS_NODE_ID` | `0` | Integer node index within the cluster |
 | `OMS_AERON_DIR` | `/dev/shm/oms-aeron-<nodeId>` | Aeron MediaDriver shared memory. Use `/tmp/...` on macOS |
 | `OMS_ARCHIVE_DIR` | `~/oms-archive-<nodeId>` | Aeron Archive (Raft log + snapshots). Must survive reboots — never use `/tmp` in production |
-| `OMS_MAX_NOTIONAL` | `10000000` | Per-order notional limit in base currency units |
-| `OMS_SYMBOLS` | `AAPL,MSFT,GOOG,AMZN` | Comma-separated permitted symbols whitelist |
 | `OMS_CLUSTER_MEMBERS` | `0,localhost:9000,...` | Aeron Cluster member string — see format below |
 | `OMS_CLUSTER_INGRESS_CHANNEL` | `aeron:udp?endpoint=localhost:9000` | Endpoint where the leader accepts client sessions |
 | `OMS_ARCHIVE_CONTROL_CHANNEL` | `aeron:udp?endpoint=localhost:8010` | Archive bind channel (UDP) |
@@ -314,10 +354,17 @@ INFO  OmsClusteredService - New leadership term: leaderMemberId=0 termId=0
 | `OMS_ARCHIVE_LOCAL_RESPONSE_CHANNEL` | `aeron:ipc` | Archive response channel for in-process clients |
 | `OMS_ARCHIVE_REPLICATION_CHANNEL` | `aeron:udp?endpoint=localhost:0` | Endpoint peers use for log replication. Use a fixed port in multi-node |
 | `OMS_ARCHIVE_DELETE_ON_START` | `false` | `true` wipes all archive and cluster state on restart. Use only for test environments |
-| `OMS_CONFIG_FILE` | _(not set)_ | Optional path to a `.properties` file (e.g. `config/oms-node.properties`). File values take priority over OS env vars via `ChainedConfigSource`. Keys use the same names as the env vars below. See `config/oms-node.properties.example` |
-| `OMS_MAX_ORDERS` | `65536` | Maximum parent orders held in `OrderBook` (off-heap pre-allocation). Increase for higher throughput; requires `OMS_ARCHIVE_DELETE_ON_START=true` once after change |
+
+**Capacity and tuning** (resolved via `OmsConfig`; also configurable via properties file):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OMS_CONFIG_FILE` | _(not set)_ | Path to a `.properties` file. File values take priority over env vars. See `config/oms-node.properties.example` |
+| `OMS_MAX_ORDERS` | `65536` | Maximum parent orders held in `OrderBook` (off-heap pre-allocation). Requires `OMS_ARCHIVE_DELETE_ON_START=true` once after changing |
 | `OMS_MAX_CHILDREN` | `32768` | Maximum child orders held in `ChildOrderRegistry` (off-heap pre-allocation). Same migration rule as `OMS_MAX_ORDERS` |
 | `OMS_INTENT_FRAGMENT_LIMIT` | `20` | Maximum `ChildOrderIntent` fragments polled per work cycle by `OmsClusteredService` |
+| `OMS_MAX_NOTIONAL` | `10000000` | Per-order notional limit in base currency units |
+| `OMS_SYMBOLS` | `AAPL,MSFT,GOOG,AMZN` | Comma-separated permitted symbols whitelist |
 
 > **Production archive dir.** The default `~/oms-archive-<nodeId>` survives reboots. For production, set `OMS_ARCHIVE_DIR` to a dedicated persistent mount (separate disk from the OS, monitored for space). Never point this at `/tmp` or any tmpfs path.
 
@@ -336,12 +383,12 @@ Three-node example:
 0,host1:9000,host1:9001,host1:9002,host1:9003,host1:8010|1,host2:9000,host2:9001,host2:9002,host2:9003,host2:8010|2,host3:9000,host3:9001,host3:9002,host3:9003,host3:8010
 ```
 
-#### AlgoSorAgent (`oms-launcher`)
+#### AlgoSorAgent (`oms-launcher`) — all variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OMS_AERON_DIR` | `/dev/shm/oms-aeron-launcher` | Aeron dir for the launcher process (must differ from OmsNode's dir) |
-| `OMS_CONFIG_FILE` | _(not set)_ | Optional path to a `.properties` file; same semantics as for OmsNode above |
+| `OMS_CONFIG_FILE` | _(not set)_ | Path to a `.properties` file; same semantics as for OmsNode above |
 | `OMS_ALGO_FRAGMENT_LIMIT` | `10` | Maximum parent-order fragments polled per work cycle by `AlgoSorAgent` |
 | `OMS_MAX_VENUES` | `10` | Maximum venues `SmartOrderRouter` can split across (off-heap arrays pre-allocated at this size) |
 
