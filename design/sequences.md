@@ -23,3 +23,7 @@ Intents carry no sequence number. Idempotency is provided by `ChildOrderIntentVa
 ### 8.5 Venue → oms-core (execution reports)
 
 Fill reports arrive on stream 11. A retransmitted fill for an already-terminal child returns null from `ChildOrderRegistry.applyFillAndAggregate()` (child not found in index) and is silently discarded. If applied twice before terminal: `OrderFlyweight.filledQty()` would exceed `qty()` and `leavesQty()` would go negative — clamped to 0 by `Math.max(0L, newLeavesQty)` in `applyFill()`.
+
+### 8.6 Recovery — algo-sor state after failover
+
+`IcebergAlgoEngine` and `TwapAlgoEngine` hold per-order state in-process (not snapshotted). After a leader failover, `OmsClusteredService.onStart()` calls `republishRoutingOrders()` to re-send all NEW / ROUTING / PARTIALLY_FILLED parent orders to algo-sor on stream 30. algo-sor re-routes each order; `ChildOrderIntentValidator` rule 7 (over-allocation guard) blocks any slice that would exceed `parent.leavesQty - liveChildQty`, preventing double-slicing for qty already committed in the restored `ChildOrderRegistry`.

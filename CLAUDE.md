@@ -83,6 +83,39 @@ in `CLAUDE.md` creates a second source of truth that will drift.
 
 ---
 
+# Resilience Principles
+
+These principles apply to every change that touches stateful components, snapshot paths,
+or inter-process channels. Violating any one can cause silent data loss on failover.
+
+**P1 — Snapshot completeness:** Every component that holds durable order state MUST be
+serialized in `SnapshotManager.takeSnapshot()` and restored in `loadSnapshot()`. Currently:
+`OrderBook`, `ValidationEngine.seenClOrdIds`, `ChildOrderRegistry`. Adding a new stateful
+component requires updating both methods and `MAX_SNAPSHOT_BYTES`.
+
+**P2 — Archive durability:** `OMS_ARCHIVE_DIR` must point to a durable filesystem that
+survives host reboots. The default `${user.home}/oms-archive-{nodeId}` is the minimum;
+production must use a dedicated persistent mount. Never use `/tmp`.
+
+**P3 — Snapshot frequency:** `ConsensusModule.Context.snapshotIntervalNs` is set to
+5 minutes. Do not remove or increase this without updating `failover.md` and getting
+explicit sign-off — longer intervals increase RTO.
+
+**P4 — Post-restore re-routing:** `OmsClusteredService.onStart()` MUST call
+`republishRoutingOrders()` after every snapshot restore. This re-publishes all
+NEW / ROUTING / PARTIALLY_FILLED orders to algo-sor, whose in-process state is lost on
+crash. `ChildOrderIntentValidator` rule 7 prevents over-slicing.
+
+**P5 — orderId counter correctness:** `recomputeNextOrderId()` MUST scan both
+`OrderBook` and `ChildOrderRegistry` for the max orderId after restore. Both parent
+and child orders share the `nextOrderId` counter.
+
+**P6 — Channel image handlers:** Every Aeron subscription on a channel where a disconnect
+constitutes a SPOF MUST have `availableImageHandler` and `unavailableImageHandler` attached.
+Currently required: `intentSub` (stream 12, algo-sor → oms-core). Log WARN on disconnect.
+
+---
+
 # Engineering Rules
 - Strictly Zero-GC in core packages.
 - No object allocation, no boxing/unboxing, no standard Java collections on the hot path.

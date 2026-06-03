@@ -93,10 +93,10 @@ Components in this section own the stateful, Raft-replicated runtime of MarketOM
 **Module:** `oms-core`
 **Thread model:** called from the Raft commit thread during `onTakeSnapshot()` and `onStart()`; not called during normal order processing
 **Zero-allocation contract:** `snapshotBuffer` is a pre-allocated `UnsafeBuffer` backed by a `ByteBuffer.allocateDirect(MAX_SNAPSHOT_BYTES)` at construction — no runtime allocation during snapshot/restore
-**Inputs:** `takeSnapshot(OrderBook, ValidationEngine, ExclusivePublication, IdleStrategy)`, `loadSnapshot(Image, OrderBook, ValidationEngine, IdleStrategy)`
-**Outputs:** serialized snapshot offered to `snapshotPublication`; `OrderBook.restoreOrder()` and `ValidationEngine.restoreEntry()` called during load
-**Invariants:** `SNAPSHOT_VERSION = 1`; `HEADER_SIZE = 16`; `DEDUP_ENTRY_SIZE = 16`; `MAX_SNAPSHOT_BYTES = 16 + 65_536 × 128 + 65_536 × 16 ≈ 9.4 MB`; snapshot wire order: header → order records → dedup entries
-**Failure mode:** Snapshot taken without `ChildOrderRegistry` state (current implementation) loses child orders on failover; `handleSnapshotFragment()` throws `IllegalStateException` if version mismatches
+**Inputs:** `takeSnapshot(OrderBook, ValidationEngine, ChildOrderRegistry, ExclusivePublication, IdleStrategy)`, `loadSnapshot(Image, OrderBook, ValidationEngine, ChildOrderRegistry, IdleStrategy)`
+**Outputs:** serialized snapshot offered to `snapshotPublication`; `OrderBook.restoreOrder()`, `ValidationEngine.restoreEntry()`, and `ChildOrderRegistry.restore()` called during load
+**Invariants:** `SNAPSHOT_VERSION = 2`; `HEADER_SIZE = 16`; `DEDUP_ENTRY_SIZE = 16`; `MAX_SNAPSHOT_BYTES = 16 + 65_536 × 80 + 65_536 × 16 + 4 + 32_768 × 128 ≈ 10.5 MB`; snapshot wire order: header → parent order records → dedup entries → child registry (self-describing int count + records)
+**Failure mode:** Version mismatch throws `IllegalStateException` — wipe archive dir and restart with `OMS_ARCHIVE_DELETE_ON_START=true` when upgrading snapshot format
 
 ---
 
@@ -108,7 +108,7 @@ Components in this section own the stateful, Raft-replicated runtime of MarketOM
 **Zero-allocation contract:** All components pre-allocated in constructor; `algoOutbound` (129 bytes), `egressBuffer` (129 bytes), `intentView`, `decodeFlyweight` all pre-allocated; `intentFragmentHandler` is a pre-allocated method reference (not a lambda)
 **Inputs:** `onSessionMessage()` (Raft commit), `onTimerEvent()` (Raft timer), `onStart()` (snapshot restore), `onTakeSnapshot()` (snapshot write)
 **Outputs:** `algoSorPublication.offer()` on stream 30; `session.offer()` (egress) on cluster egress; `fixEncoder.sendNewOrderSingle()` on stream 10
-**Invariants:** `pollIntents()` is called at the start of every `onSessionMessage()` and `onTimerEvent()` to drain pending intents on the cluster thread; `ParentOrderState.registerTransitions()` called in `onStart()` before snapshot load; `nextOrderId` increments monotonically from 1
+**Invariants:** `pollIntents()` is called at the start of every `onSessionMessage()` and `onTimerEvent()` to drain pending intents on the cluster thread; `ParentOrderState.registerTransitions()` called in `onStart()` before snapshot load; `nextOrderId` increments monotonically and is recomputed after restore by scanning both `OrderBook` and `ChildOrderRegistry`; `republishRoutingOrders()` called after every `onStart()` to re-route NEW/ROUTING/PARTIALLY_FILLED parents
 **Failure mode:** A crash between `childRegistry.createChild()` and `fixEncoder.sendNewOrderSingle()` leaves a child in the registry with no corresponding NOS sent; reconciled via FIX OrderStatusRequest (35=H) on reconnect
 
 ---

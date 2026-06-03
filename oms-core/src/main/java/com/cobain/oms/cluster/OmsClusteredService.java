@@ -17,10 +17,12 @@ import com.cobain.oms.model.OrderState;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
 import io.aeron.Subscription;
+import io.aeron.cluster.ClusterControl;
 import io.aeron.cluster.codecs.CloseReason;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
+import org.agrona.concurrent.status.AtomicCounter;
 import io.aeron.logbuffer.FragmentHandler;
 import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
@@ -49,6 +51,12 @@ public final class OmsClusteredService implements ClusteredService {
     private static final Logger log = LoggerFactory.getLogger(OmsClusteredService.class);
 
     private static final int INTENT_FRAGMENT_LIMIT = 20;
+
+    // Periodic snapshot every 5 minutes via Raft timer + ClusterControl toggle.
+    // Limits log replay window on recovery. Aeron 1.47.0 has no snapshotIntervalNs on
+    // ConsensusModule.Context; this timer achieves the same result from the service side.
+    private static final long SNAPSHOT_INTERVAL_NS  = java.util.concurrent.TimeUnit.MINUTES.toNanos(5);
+    private static final long SNAPSHOT_TIMER_ID     = 0x534E4150_00000001L; // "SNAP" prefix
 
     // ── Core OMS components — all pre-allocated ───────────────────────────────
     private final OrderBook                  orderBook;
@@ -116,13 +124,19 @@ public final class OmsClusteredService implements ClusteredService {
         if (snapshotImage != null) {
             log.info("Restoring OMS state from snapshot at position {}",
                      snapshotImage.position());
-            snapshotManager.loadSnapshot(snapshotImage, orderBook, validationEngine, idleStrategy);
-            log.info("Snapshot restored: {} open orders", orderBook.openOrderCount());
+            snapshotManager.loadSnapshot(snapshotImage, orderBook, validationEngine,
+                                         childRegistry, idleStrategy);
+            log.info("Snapshot restored: {} open orders, {} child orders",
+                     orderBook.openOrderCount(), childRegistry.size());
         } else {
             log.info("No snapshot found — starting with fresh state");
         }
 
         recomputeNextOrderId();
+        republishRoutingOrders();
+
+        // Schedule periodic snapshot timer — fires every SNAPSHOT_INTERVAL_NS.
+        cluster.scheduleTimer(SNAPSHOT_TIMER_ID, cluster.time() + SNAPSHOT_INTERVAL_NS);
     }
 
     @Override
@@ -172,6 +186,15 @@ public final class OmsClusteredService implements ClusteredService {
 
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
+        if (correlationId == SNAPSHOT_TIMER_ID) {
+            final AtomicCounter toggle = ClusterControl.findControlToggle(
+                    cluster.aeron().countersReader(), cluster.context().clusterId());
+            if (toggle != null) {
+                ClusterControl.ToggleState.SNAPSHOT.toggle(toggle);
+                log.info("Periodic snapshot requested via ClusterControl toggle");
+            }
+            cluster.scheduleTimer(SNAPSHOT_TIMER_ID, timestamp + SNAPSHOT_INTERVAL_NS);
+        }
         // Drain intents on each timer tick so intents are not stranded when no
         // client messages are flowing.
         pollIntents();
@@ -181,7 +204,8 @@ public final class OmsClusteredService implements ClusteredService {
     public void onTakeSnapshot(final ExclusivePublication snapshotPublication) {
         log.info("Taking OMS snapshot: {} open orders, {} child orders",
                  orderBook.openOrderCount(), childRegistry.size());
-        snapshotManager.takeSnapshot(orderBook, validationEngine, snapshotPublication, idleStrategy);
+        snapshotManager.takeSnapshot(orderBook, validationEngine, childRegistry,
+                                     snapshotPublication, idleStrategy);
         log.info("Snapshot complete");
     }
 
@@ -584,6 +608,39 @@ public final class OmsClusteredService implements ClusteredService {
                 maxId[0] = fw.orderId();
             }
         });
+        final long maxChildId = childRegistry.maxOrderId();
+        if (maxChildId > maxId[0]) {
+            maxId[0] = maxChildId;
+        }
         nextOrderId = maxId[0] + 1L;
+        log.info("nextOrderId recomputed to {} after snapshot restore", nextOrderId);
+    }
+
+    /**
+     * Re-publish all NEW, ROUTING, and PARTIALLY_FILLED parent orders to algo-sor after
+     * snapshot restore. algo-sor state (IcebergAlgoEngine, TwapAlgoEngine) is in-process
+     * and does not survive a crash. ChildOrderIntentValidator rule 7 (over-allocation guard)
+     * prevents duplicate slicing for child qty already present in the restored ChildOrderRegistry.
+     */
+    private void republishRoutingOrders() {
+        final int[] count = {0};
+        orderBook.forEachActiveSlot(slot -> {
+            final OrderFlyweight fw = orderBook.wrapFlyweight(slot);
+            final byte state = fw.orderState();
+            if (state == OrderState.NEW || state == ParentOrderState.ROUTING
+                    || state == OrderState.PARTIALLY_FILLED) {
+                algoOutbound.putByte(0, ClusterMessageType.NEW_ORDER);
+                algoOutbound.putBytes(
+                        ClusterMessageType.OFFSET_PAYLOAD,
+                        orderBook.buffer(),
+                        orderBook.offsetForSlot(slot),
+                        OrderLayout.MESSAGE_SIZE);
+                algoSorPublication.offer(algoOutbound, 0, ClusterMessageType.IPC_MESSAGE_SIZE);
+                count[0]++;
+            }
+        });
+        if (count[0] > 0) {
+            log.info("Republished {} routing/active orders to algo-sor after restore", count[0]);
+        }
     }
 }
