@@ -1,16 +1,17 @@
 # market-oms
 
-A sell-side Order Management System (OMS) built for deterministic sub-millisecond execution with zero garbage collection on the hot path. Written in Java 21 using Aeron Cluster for fault-tolerant state replication, Agrona for off-heap memory management, and Aeron IPC/UDP for inter-component transport.
+A sell-side Order Management System (OMS) built for deterministic sub-millisecond execution with zero garbage collection on the hot path. Written in Java 21 using Aeron Cluster for fault-tolerant state replication, Agrona for off-heap memory management, and Aeron IPC for inter-component transport.
 
 ---
 
 ## Design Goals
 
 - **Zero-GC hot path.** Every component on the critical execution path — validation, state machine, child order routing — operates on pre-allocated off-heap buffers. No object allocation occurs between message receipt and exec report dispatch.
-- **Deterministic latency.** Single-threaded execution loop on the cluster service thread. No `synchronized` blocks, no lock contention, no JVM safepoints on the trading path.
+- **Deterministic latency.** Single-threaded execution on the cluster service thread. No `synchronized` blocks, no lock contention, no JVM safepoints on the trading path.
 - **Golden-source order state.** `oms-core` is the single authoritative store for all order state — parent and child. No component outside `oms-core` creates, mutates, or persists order records.
-- **Transparent failover.** Aeron Cluster replicates all state transitions via Raft. If the leader node fails, a follower promotes automatically, replays the commit log from the last snapshot, and resumes processing without data loss.
-- **Explicit wiring, no frameworks.** No Spring, no CDI, no reflection. All construction and wiring happens in `OmsLauncher.main()` via constructor injection.
+- **Transparent failover.** Aeron Cluster replicates all state transitions via Raft. If the leader node fails, a follower elects and resumes processing automatically — no data loss, no human intervention.
+- **Zero single points of failure.** Three-node quorum, periodic snapshots every 5 minutes, algo-sor disconnect detection via image handlers, durable archive storage outside `/tmp`.
+- **Explicit wiring, no frameworks.** No Spring, no CDI, no reflection. All wiring is explicit constructor injection in `OmsLauncher.main()`.
 
 ---
 
@@ -24,10 +25,10 @@ market-oms/
 ├── oms-core/        Order state machine, validation, Aeron Cluster service, OmsNode entry point
 ├── algo-sor/        Algo execution engines and Smart Order Router (pure computation, stateless)
 ├── oms-launcher/    Process entry point for algo-sor — wires AlgoSorAgent, starts AgentRunner
-└── oms-harness/     Black-box test harness — injects orders via Aeron Cluster client API
+└── oms-harness/     Black-box integration test harness — injects orders via Aeron Cluster client API
 ```
 
-**Hard module boundary:** `algo-sor` must never depend on `oms-core`. The only shared module is `oms-codec`. All inter-module communication at runtime is over Aeron IPC.
+**Hard module boundary:** `algo-sor` must never depend on `oms-core`. The only shared module is `oms-codec`. All inter-module communication is over Aeron IPC at runtime.
 
 ### Component Interactions
 
@@ -37,87 +38,96 @@ Harness / FIX Client
         │  Aeron Cluster ingress (aeron:udp, port 9000)
         │  Wire: ClusterMessageType byte + 128-byte OrderLayout
         ▼
-Aeron Cluster (Raft — single node for dev, 3-node for prod)
+Aeron Cluster (Raft — single node dev, 3-node production)
   • Commits message to replicated log across quorum
   • onSessionMessage() fires only after commit
         │
         ▼
-oms-core  OmsClusteredService  (clustered-service thread)
+oms-core  OmsClusteredService  (cluster service thread)
   ┌──────────────────────────────────────────────────────┐
   │  1. ValidationEngine  — 8 fast-fail rules + dedup    │
-  │  2. OrderBook         — off-heap parent store        │
+  │  2. OrderBook         — off-heap parent order store  │
   │  3. OrderStateMachine — state transitions            │
   │  4. ChildOrderIntentValidator — 7 pre-child rules    │
-  │  5. ChildOrderRegistry — off-heap child store        │
+  │  5. ChildOrderRegistry — off-heap child order store  │
   └──────────────────────────────────────────────────────┘
-        │ Aeron IPC stream 10 (parent orders for routing)
+        │ Aeron IPC stream 30 (parent orders for routing)
         ▼
 algo-sor  AlgoSorAgent  (separate AgentRunner thread)
-  • SmartOrderRouter — splits qty across venues by price
-  • IcebergAlgoEngine — display-qty slicing
-  • TwapAlgoEngine   — time-interval slicing
+  • SmartOrderRouter    — splits qty across venues by price
+  • IcebergAlgoEngine   — display-qty (iceberg) slicing
+  • TwapAlgoEngine      — time-interval slicing
   • Publishes ChildOrderIntent back to oms-core — NEVER creates child state
         │ Aeron IPC stream 12 (ChildOrderIntents)
         ▼
 oms-core  onChildOrderIntent
-  • ChildOrderIntentValidator — validates against live parent state (7 rules)
+  • ChildOrderIntentValidator — validates against live parent state
   • ChildOrderRegistry.createChild() — child born here and only here
   • OrderStateMachine.transitionToRouting() — parent advances to ROUTING
-        │ Aeron IPC → FIX bridge
+        │ Aeron IPC stream 10 (FIX Binary NOS)
         ▼
 FIX Connectivity Layer → Venue / Exchange
+        │ Aeron IPC stream 11 (FIX Binary exec reports)
+        ▼
+oms-core  handleExecReport  →  aggregates fills  →  egress to client
 ```
-
-Exec reports from venues flow back through the FIX bridge into `oms-core` via `handleExecReport`, where fills are aggregated into child and parent state and acknowledgements are sent back to the cluster client via `ClientSession.offer()`.
 
 ### Why algo-sor Sends Intents, Not Orders
 
-`algo-sor` is a pure computation engine. It calculates *what* should be routed based on order parameters, but `oms-core` decides *whether* to honour the instruction based on current live state. By the time a `ChildOrderIntent` arrives, the parent may have received fills, a cancel, or a full fill. The `ChildOrderIntentValidator` enforces seven rules — including an over-allocation guard — before any child record is created. This makes `algo-sor` stateless between work cycles and means all durable state lives in the replicated `oms-core` cluster.
+`algo-sor` is a pure computation engine. It calculates *what* should be routed; `oms-core` decides *whether* to honour the instruction based on current live state. By the time a `ChildOrderIntent` arrives, the parent may have received fills, a cancel, or a full fill. The `ChildOrderIntentValidator` enforces seven rules — including an over-allocation guard — before any child record is created. This makes `algo-sor` stateless between work cycles and means all durable state lives in the replicated cluster.
+
+### Aeron IPC Channel Map
+
+| Stream | Direction | Content | Size |
+|--------|-----------|---------|------|
+| 30 | `oms-core` → `algo-sor` | Accepted parent orders (`ClusterMessageType` + `OrderLayout`) | 129 bytes |
+| 12 | `algo-sor` → `oms-core` | `ChildOrderIntent` messages (8-byte header + 56-byte intent) | 64 bytes |
+| 10 | `oms-core` → FIX bridge | FIX Binary NOS / cancel / replace | 76 bytes |
+| 11 | FIX bridge → `oms-core` | FIX Binary execution reports | 76 bytes |
 
 ### Cluster Ingress Wire Format
 
-All messages between Aeron Cluster clients and `OmsClusteredService` use `ClusterMessageType` framing:
-
 ```
 [0]      msgType  : byte         — 1=NEW_ORDER, 2=CANCEL_ORDER, 3=REPLACE_ORDER
-[1..128] payload  : OrderLayout  — 128-byte order record at OrderLayout field offsets
+[1..128] payload  : OrderLayout  — 128-byte order record at OrderLayout offsets
 ```
-Total: 129 bytes. Exec report responses use the same format sent back via `ClientSession.offer()`.
 
-`FIXMessageDecoder` handles the separate FIX bridge → oms-core path only (pre-parsed FIX Binary, stream 10); it is never used for cluster ingress/egress.
+Total: 129 bytes (`ClusterMessageType.IPC_MESSAGE_SIZE`). Exec report responses use the same framing sent back via `ClientSession.offer()`.
+
+`FIXMessageDecoder` handles only the FIX bridge → oms-core path (stream 11); it is never used for cluster ingress/egress.
 
 ### Order State Model
 
 ```
-                    ┌─────────┐
-              ──────►   NEW   ├──────────────────────────► REJECTED
-                    └────┬────┘
-                         │ first ChildOrderIntent accepted
-                         ▼
-                    ┌─────────┐
-                    │ ROUTING │◄─── (additional child intents)
-                    └────┬────┘
-                         │ first fill aggregated
-                         ▼
-                  ┌──────────────┐
-          ┌──────►│ PARTIALLY    │
-          │       │   FILLED     ├──────────────────────► CANCELED
-          │       └──────┬───────┘      (via PENDING_CANCEL)
-          │fills         │ leavesQty == 0
-          └──────────────▼
-                    ┌─────────┐
-                    │ FILLED  │  (terminal)
-                    └─────────┘
+             ┌─────────┐
+       ──────►   NEW   ├───────────────────────────────► REJECTED
+             └────┬────┘
+                  │ first ChildOrderIntent accepted
+                  ▼
+             ┌─────────┐
+             │ ROUTING │◄─── (additional child intents)
+             └────┬────┘
+                  │ first fill aggregated
+                  ▼
+           ┌──────────────┐
+   ┌──────►│  PARTIALLY   │
+   │       │   FILLED     ├────────────────────────────► CANCELED
+   │       └──────┬───────┘           (via PENDING_CANCEL)
+   │ fills        │ leavesQty == 0
+   └──────────────▼
+             ┌─────────┐
+             │ FILLED  │  (terminal)
+             └─────────┘
 ```
 
-`ROUTING` is a parent-only extension state (`ParentOrderState`, value 10). Base states (`OrderState`, bytes 0–7) are shared by both parent and child orders. `OrderState.NUM_STATES = 16` to accommodate parent-only states. `ParentOrderState.registerTransitions()` must be called before any `AgentRunner` starts.
+`ROUTING` is a parent-only extension state (`ParentOrderState.ROUTING = 10`). Base states (`OrderState`, bytes 0–9) are shared by both parent and child orders. `OrderStateMachine.TRANSITION_TABLE` is `byte[16][10]`; `ParentOrderState.registerTransitions()` must be called before any `AgentRunner` starts.
 
 ### Memory Layout
 
 All orders — parent and child — are stored as contiguous 128-byte binary records in pre-allocated off-heap `UnsafeBuffer` instances. Field access is a direct memory read/write at a computed byte offset. No `Order` object is ever allocated on the hot path.
 
 ```
-OrderLayout (128 bytes = 2 × 64-byte cache lines):
+OrderLayout (128 bytes — 2 × 64-byte cache lines):
 
   Offset  Size  Field
   ------  ----  --------------------------------
@@ -142,24 +152,59 @@ OrderLayout (128 bytes = 2 × 64-byte cache lines):
    120      8   parentOrFirstChildId (parent: first child orderId; child: parent orderId)
 ```
 
-Prices are stored as `long` scaled by `10,000`. `£12.3456` → `123456L`. No `double`, no `BigDecimal` on the hot path.
-
-### Aeron IPC Channel Map
-
-| Stream ID | Direction | Content |
-|-----------|-----------|---------|
-| 10 | `oms-core` → `algo-sor` | Accepted parent orders (ClusterMessageType + OrderLayout) |
-| 12 | `algo-sor` → `oms-core` | ChildOrderIntents (ClusterMessageType header + 56-byte intent) |
-
-Stream 11 is removed. `algo-sor` never writes to the FIX bridge.
+Prices are stored as `long` scaled by `10,000`. `£150.00` → `1_500_000L`. No `double`, no `BigDecimal` on the hot path.
 
 ### Failover and Recovery
 
-Each node runs as an Aeron Cluster member. State is snapshotted via `onTakeSnapshot()`, which serialises `OrderBook`, `ChildOrderRegistry`, and `ValidationEngine.seenClOrdIds` into the snapshot buffer as raw binary records — no Java serialisation, no JSON. `onStart()` with a non-null `snapshotImage` restores all state before any new messages are processed.
+Each node runs as an Aeron Cluster member. On failover, the new leader automatically:
 
-**State persistence:** Aeron Cluster stores two separate state trees on disk:
-- **Archive dir** — Raft log recordings (`.rec` files), archive catalog. Wiped by `Archive.Context.deleteArchiveOnStart(true)`.
-- **Cluster dir** (subdirectory of archive dir) — `node-state.dat`, `recording.log`, cluster mark files. Wiped by `ConsensusModule.Context.deleteDirOnStart(true)`. **Both must be wiped together.** Deleting only the archive leaves the cluster dir intact, causing the ConsensusModule to replay all prior session messages and restore `ValidationEngine` state even without a snapshot.
+1. Calls `onStart()` with the most recent snapshot image
+2. Restores `OrderBook`, `ChildOrderRegistry`, and `ValidationEngine.seenClOrdIds` from the snapshot
+3. Recomputes `nextOrderId` by scanning both `OrderBook` and `ChildOrderRegistry` for the max
+4. Re-publishes all `NEW` / `ROUTING` / `PARTIALLY_FILLED` parent orders to algo-sor so in-flight routing resumes (`ChildOrderIntentValidator` rule 7 prevents over-slicing)
+5. Replays the Raft log from the snapshot position to catch up committed messages after the snapshot
+6. Begins accepting new client sessions
+
+**Snapshot format (version 2):**
+```
+[0-3]   version (int) = 2
+[4-7]   orderCount (int)
+[8-11]  dedupCount (int)
+[12-15] reserved = 0
+[16 .. 16+orderCount×80]     parent order records (80 bytes each)
+[.. + dedupCount×16]         dedup entries (clOrdId:8 + orderId:8)
+[.. + 4 + childCount×128]    child registry (self-describing: int count + 128-byte records)
+```
+
+Max snapshot size ≈ 10.5 MB, pre-allocated at startup. Snapshots are triggered every 5 minutes via a Raft timer in `OmsClusteredService`, keeping log replay on recovery bounded to at most 5 minutes of committed messages.
+
+**Archive state layout:**
+- **Archive dir** (`OMS_ARCHIVE_DIR`) — Raft log recordings, archive catalog
+- **Cluster dir** (`$OMS_ARCHIVE_DIR/cluster`) — `node-state.dat`, `recording.log`, cluster mark files
+
+Both must be wiped together when doing a clean restart. `OMS_ARCHIVE_DELETE_ON_START=true` wipes both. Deleting only the archive dir while leaving the cluster dir causes the ConsensusModule to replay the full Raft log from `recording.log`.
+
+---
+
+## Design Documentation
+
+All design facts are in `design/`. Load `design/INDEX.md` at the start of any task to find which file to read.
+
+| File | Owns |
+|------|------|
+| `INDEX.md` | Task-to-file routing, file ownership table, post-change verification |
+| `principles.md` | Design rules, module boundaries, zero-GC contract |
+| `checklist.md` | Gate questions before any change |
+| `state-model.md` | State constants, transition table, invariants |
+| `wire-formats.md` | OrderLayout offsets, ChildOrderIntentFlyweight layout, FIX Binary format |
+| `components-codec.md` | Contracts for oms-codec components |
+| `components-core.md` | Contracts for oms-core and algo-sor components |
+| `data-flows.md` | Aeron stream IDs, message flow diagrams |
+| `sequences.md` | Idempotency mechanisms, sequencing boundaries, recovery sequence |
+| `failover.md` | Snapshot wire format, recovery step sequence, archive durability |
+| `decisions.md` | Design decision log |
+| `glossary.md` | Domain terms and constant values |
+| `resilience-review.md` | Structured resilience audit: data loss gaps, SPOF analysis, satisfied invariants |
 
 ---
 
@@ -168,13 +213,13 @@ Each node runs as an Aeron Cluster member. State is snapshotted via `onTakeSnaps
 | Requirement | Version | Notes |
 |-------------|---------|-------|
 | JDK | 21 | OpenJDK 21 or GraalVM 21 |
-| Gradle | 8+ | Wrapper included — use `./gradlew` |
+| Gradle | wrapper | Use `./gradlew` — wrapper is committed |
 | OS | Linux or macOS | See macOS note below |
-| RAM | 4 GB minimum | 8 GB recommended |
+| RAM | 4 GB minimum | 8 GB recommended (off-heap buffers + MediaDriver) |
 
-**macOS note.** `/dev/shm` does not exist on macOS. `OMS_AERON_DIR` defaults to `/dev/shm/oms-aeron-<nodeId>`. For local development set `OMS_AERON_DIR=/tmp/oms-aeron-0` (the harness script does this automatically). Latency will not reflect production.
+**macOS.** `/dev/shm` does not exist on macOS. `OMS_AERON_DIR` defaults to `/dev/shm/oms-aeron-<nodeId>`. All scripts set `OMS_AERON_DIR=/tmp/oms-aeron-...` automatically. Latency figures will not reflect production.
 
-**JVM flags.** All modules that use Agrona require these `--add-opens` in `applicationDefaultJvmArgs` (already set in each module's `build.gradle`):
+**JVM flags.** All modules that use Agrona require these `--add-opens` flags (already set in each module's `build.gradle`):
 ```
 --add-opens java.base/jdk.internal.misc=ALL-UNNAMED
 --add-opens java.base/sun.nio.ch=ALL-UNNAMED
@@ -196,13 +241,17 @@ Omitting `jdk.internal.misc` causes `IllegalAccessError` from `UnsafeApi` at sta
 # Verify module boundary: algo-sor must not depend on oms-core
 ./gradlew :algo-sor:dependencies --configuration compileClasspath | grep oms-core
 # Expected: no output
+
+# Verify module boundary: oms-codec must not depend on aeron-cluster
+./gradlew :oms-codec:dependencies --configuration compileClasspath | grep aeron-cluster
+# Expected: no output
 ```
 
 ---
 
 ## Running Locally
 
-Use the provided shell scripts — not `./gradlew run`. The scripts handle building, directory setup, startup ordering, and clean shutdown. `./gradlew run` doesn't coordinate the two-process startup and makes logs harder to work with.
+Use the provided shell scripts rather than `./gradlew run`. The scripts handle build, directory setup, startup ordering, and clean shutdown.
 
 ### Full stack (OmsNode + AlgoSorAgent)
 
@@ -210,7 +259,7 @@ Use the provided shell scripts — not `./gradlew run`. The scripts handle build
 ./run-local.sh
 ```
 
-Builds both modules, starts OmsNode, waits for the MediaDriver to be ready (polls for `cnc.dat` using `find`, which works on both Linux and macOS), then starts AlgoSorAgent. Ctrl-C shuts both down cleanly.
+Builds both modules, starts OmsNode, waits for the MediaDriver to be ready (polls for `cnc.dat`), then starts AlgoSorAgent. Ctrl-C shuts both down cleanly.
 
 ```
 Building all modules...
@@ -226,7 +275,7 @@ Starting AlgoSorAgent... logging to /tmp/oms-launcher.log
 ================================================================
 ```
 
-Expected in `/tmp/oms-node.log` once leader-elected:
+Expected in `/tmp/oms-node.log` after leader election:
 ```
 INFO  OmsNode - Starting OMS node 0 with 4 permitted symbols (deleteArchiveOnStart=false)
 INFO  OmsNode - OMS node 0 is running. Waiting for shutdown signal...
@@ -234,46 +283,42 @@ INFO  OmsClusteredService - OMS cluster role changed: FOLLOWER → LEADER
 INFO  OmsClusteredService - New leadership term: leaderMemberId=0 termId=0
 ```
 
-### Node only (no AlgoSorAgent)
-
-```bash
-./run-oms-node.sh
-```
-
-Useful when connecting a different client or debugging node behaviour in isolation.
-
 ### Components individually
 
 ```bash
-# Terminal 1 — start the node first
+# Terminal 1 — node first
 ./run-oms-node.sh
 
-# Terminal 2 — start algo-sor once the node is ready
+# Terminal 2 — algo-sor once node is ready
 ./run-algo-sor.sh
 ```
 
-`run-algo-sor.sh` connects to the node over Aeron IPC. The node must be running and its MediaDriver must be up before the launcher starts.
+`run-algo-sor.sh` connects over Aeron IPC. The node must be running before the launcher starts.
 
-### Environment Variables Reference
+### Environment Variables
 
-#### OmsNode (oms-core)
+#### OmsNode (`oms-core`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OMS_NODE_ID` | `0` | Integer node index within the cluster |
-| `OMS_AERON_DIR` | `/dev/shm/oms-aeron-<nodeId>` | Aeron MediaDriver shared memory directory. Use `/tmp/...` on macOS |
-| `OMS_ARCHIVE_DIR` | `/tmp/oms-archive-<nodeId>` | Aeron Archive directory (Raft log + snapshots) |
+| `OMS_AERON_DIR` | `/dev/shm/oms-aeron-<nodeId>` | Aeron MediaDriver shared memory. Use `/tmp/...` on macOS |
+| `OMS_ARCHIVE_DIR` | `~/oms-archive-<nodeId>` | Aeron Archive (Raft log + snapshots). Must survive reboots — never use `/tmp` in production |
 | `OMS_MAX_NOTIONAL` | `10000000` | Per-order notional limit in base currency units |
-| `OMS_SYMBOLS` | `AAPL,MSFT,GOOG,AMZN` | Comma-separated whitelist of permitted ticker symbols |
+| `OMS_SYMBOLS` | `AAPL,MSFT,GOOG,AMZN` | Comma-separated permitted symbols whitelist |
 | `OMS_CLUSTER_MEMBERS` | `0,localhost:9000,...` | Aeron Cluster member string — see format below |
-| `OMS_CLUSTER_INGRESS_CHANNEL` | `aeron:udp?endpoint=localhost:9000` | Endpoint where the leader accepts client session requests |
-| `OMS_ARCHIVE_CONTROL_CHANNEL` | `aeron:udp?endpoint=localhost:8010` | Archive bind channel (UDP; used for cross-node replication) |
+| `OMS_CLUSTER_INGRESS_CHANNEL` | `aeron:udp?endpoint=localhost:9000` | Endpoint where the leader accepts client sessions |
+| `OMS_ARCHIVE_CONTROL_CHANNEL` | `aeron:udp?endpoint=localhost:8010` | Archive bind channel (UDP) |
 | `OMS_ARCHIVE_LOCAL_CONTROL_CHANNEL` | `aeron:ipc` | Archive request channel for in-process clients (must be IPC when archive is embedded) |
 | `OMS_ARCHIVE_LOCAL_RESPONSE_CHANNEL` | `aeron:ipc` | Archive response channel for in-process clients |
-| `OMS_ARCHIVE_REPLICATION_CHANNEL` | `aeron:udp?endpoint=localhost:0` | Endpoint peers use for log replication. Use a fixed port in multi-node deployments |
-| `OMS_ARCHIVE_DELETE_ON_START` | `false` | Set `true` to wipe all archive and cluster state on restart (use in test environments only) |
+| `OMS_ARCHIVE_REPLICATION_CHANNEL` | `aeron:udp?endpoint=localhost:0` | Endpoint peers use for log replication. Use a fixed port in multi-node |
+| `OMS_ARCHIVE_DELETE_ON_START` | `false` | `true` wipes all archive and cluster state on restart. Use only for test environments |
 
-**`OMS_CLUSTER_MEMBERS` format** (Aeron 1.40+):
+> **Production archive dir.** The default `~/oms-archive-<nodeId>` survives reboots. For production, set `OMS_ARCHIVE_DIR` to a dedicated persistent mount (separate disk from the OS, monitored for space). Never point this at `/tmp` or any tmpfs path.
+
+> **Snapshot migration.** Snapshot format changed to version 2 (adds `ChildOrderRegistry`). On first deployment from an older build: set `OMS_ARCHIVE_DELETE_ON_START=true` for one restart, then revert to `false`.
+
+**`OMS_CLUSTER_MEMBERS` format:**
 ```
 <nodeId>,<clientHost:port>,<memberHost:port>,<logHost:port>,<transferHost:port>,<archiveControlHost:port>
 ```
@@ -286,7 +331,7 @@ Three-node example:
 0,host1:9000,host1:9001,host1:9002,host1:9003,host1:8010|1,host2:9000,host2:9001,host2:9002,host2:9003,host2:8010|2,host3:9000,host3:9001,host3:9002,host3:9003,host3:8010
 ```
 
-#### AlgoSorAgent (oms-launcher)
+#### AlgoSorAgent (`oms-launcher`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -294,9 +339,9 @@ Three-node example:
 
 ---
 
-## Test Harness
+## Tests
 
-`oms-harness` is a black-box integration test harness that connects to a running `OmsNode` as an Aeron Cluster client, injects orders, and asserts exec report responses.
+There are no unit tests. Test coverage is provided exclusively by the black-box integration test harness in `oms-harness`.
 
 ### Quick start
 
@@ -305,14 +350,13 @@ Three-node example:
 ```
 
 This script:
-1. Builds all modules via Gradle
-2. Deletes stale Aeron and archive directories (`OMS_ARCHIVE_DELETE_ON_START=true` is set automatically)
-3. Starts `OmsNode` (node 0) and waits up to 60 s for its MediaDriver to be ready
-4. Starts `AlgoSorAgent` and waits 3 seconds for it to connect
-5. Runs the harness binary in the foreground, capturing its PID
-6. Prints a pass/fail summary, exits 0 on full pass, and kills OmsNode + AlgoSorAgent on exit
-
-All three process PIDs (OmsNode, AlgoSorAgent, harness) are tracked explicitly. On exit — whether normal, Ctrl-C, or error — the cleanup trap kills each by PID and waits only on those specific PIDs. No stale processes are left running after the script exits.
+1. Builds all modules
+2. Wipes Aeron and archive directories (`OMS_ARCHIVE_DELETE_ON_START=true`)
+3. Starts OmsNode and waits up to 60 s for its MediaDriver
+4. Starts AlgoSorAgent and waits 3 seconds for it to connect
+5. Runs all harness scenarios in the foreground
+6. Prints a pass/fail summary; exits 0 on full pass
+7. Kills OmsNode and AlgoSorAgent cleanly on exit regardless of outcome
 
 Expected output on success:
 ```
@@ -324,7 +368,6 @@ Starting AlgoSorAgent... logging to /tmp/oms-launcher-harness.log
 
 Running test harness...
 ================================================================
-...
   HARNESS RESULTS:  5 passed,  0 failed
   Exec reports received: 55
   Filled: 0  Canceled: 0  Rejected: 2
@@ -335,9 +378,9 @@ ALL SCENARIOS PASSED
 ### Harness scenarios
 
 | # | Scenario | What it validates |
-|---|----------|------------------|
-| 1 | Single order accepted | Valid NEW_ORDER reaches `state=NEW`; exec report arrives via cluster egress |
-| 2 | Order rejected — zero qty | `qty=0` returns `state=REJECTED` |
+|---|----------|-----------------|
+| 1 | Single order accepted | Valid `NEW_ORDER` reaches `state=NEW`; exec report arrives via cluster egress |
+| 2 | Order rejected — zero qty | `qty=0` returns `state=REJECTED` by `ValidationEngine` |
 | 3 | Order rejected — unknown symbol | Symbol not in `OMS_SYMBOLS` whitelist returns `state=REJECTED` |
 | 4 | Cancel request | Order accepted then cancel reaches `state=PENDING_CANCEL` |
 | 5 | Bulk injection (50 orders) | All 50 orders accepted and acknowledged within timeout |
@@ -347,59 +390,93 @@ ALL SCENARIOS PASSED
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HARNESS_AERON_DIR` | `/tmp/oms-aeron-harness` | Aeron dir for the harness process (must differ from node and launcher) |
-| `HARNESS_CLUSTER_INGRESS` | `0=localhost:9000` | Cluster ingress endpoint in `nodeId=host:port` format |
+| `HARNESS_CLUSTER_INGRESS` | `0=localhost:9000` | Cluster ingress in `nodeId=host:port` format (bare `host:port` is rejected by Aeron) |
 | `HARNESS_TIMEOUT_MS` | `8000` | Per-scenario wait timeout in milliseconds |
 
 ### Running against a remote node
-
-`HARNESS_CLUSTER_INGRESS` must use `nodeId=host:port` format (Aeron Cluster requirement — bare `host:port` is rejected):
 
 ```bash
 HARNESS_CLUSTER_INGRESS="0=10.0.0.5:9000" ./run-harness.sh
 ```
 
-### Logs
+### Harness logs
 
 | File | Content |
 |------|---------|
-| `/tmp/oms-node-harness.log` | OmsNode startup, leadership, session events, order processing |
+| `/tmp/oms-node-harness.log` | OmsNode startup, leadership election, order processing |
 | `/tmp/oms-launcher-harness.log` | AlgoSorAgent startup and intent publication |
 
 ---
 
-## Three-Node Cluster (production-like)
+## Production Deployment (Three-Node Cluster)
 
-Run three `OmsNode` processes with different `OMS_NODE_ID` values. All three must agree on the same `OMS_CLUSTER_MEMBERS` string. Use `run-oms-node.sh` in three terminals, overriding the per-node variables:
+### Overview
 
-**Terminal 1 — node 0:**
+Run three `OmsNode` processes on separate hosts. All three must share the same `OMS_CLUSTER_MEMBERS` string. Raft elects one leader; the other two replicate every committed log entry in real-time. A leader crash triggers a new election in under a second (configurable heartbeat/election timeouts).
+
+### Per-node startup
+
+Use `run-oms-node.sh` with node-specific overrides. Example for a 3-node cluster on hosts `10.0.1.1`, `10.0.1.2`, `10.0.1.3`:
+
 ```bash
+# All three nodes share the same OMS_CLUSTER_MEMBERS value:
+MEMBERS="0,10.0.1.1:9000,10.0.1.1:9001,10.0.1.1:9002,10.0.1.1:9003,10.0.1.1:8010|\
+1,10.0.1.2:9000,10.0.1.2:9001,10.0.1.2:9002,10.0.1.2:9003,10.0.1.2:8010|\
+2,10.0.1.3:9000,10.0.1.3:9001,10.0.1.3:9002,10.0.1.3:9003,10.0.1.3:8010"
+
+# Node 0 (on host 10.0.1.1):
 OMS_NODE_ID=0 \
-OMS_AERON_DIR=/tmp/oms-aeron-0 \
-OMS_ARCHIVE_DIR=/tmp/oms-archive-0 \
-OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010|1,localhost:9100,localhost:9101,localhost:9102,localhost:9103,localhost:8110|2,localhost:9200,localhost:9201,localhost:9202,localhost:9203,localhost:8210" \
-OMS_CLUSTER_INGRESS_CHANNEL="aeron:udp?endpoint=localhost:9000" \
-OMS_ARCHIVE_CONTROL_CHANNEL="aeron:udp?endpoint=localhost:8010" \
-OMS_ARCHIVE_REPLICATION_CHANNEL="aeron:udp?endpoint=localhost:8020" \
+OMS_AERON_DIR=/dev/shm/oms-aeron-0 \
+OMS_ARCHIVE_DIR=/mnt/oms-data/archive-0 \
+OMS_CLUSTER_MEMBERS="$MEMBERS" \
+OMS_CLUSTER_INGRESS_CHANNEL="aeron:udp?endpoint=10.0.1.1:9000" \
+OMS_ARCHIVE_CONTROL_CHANNEL="aeron:udp?endpoint=10.0.1.1:8010" \
+OMS_ARCHIVE_REPLICATION_CHANNEL="aeron:udp?endpoint=10.0.1.1:8020" \
 ./run-oms-node.sh
 ```
 
-**Terminal 2 — node 1:**
+Repeat for nodes 1 and 2, substituting `10.0.1.2` / `10.0.1.3` and `OMS_NODE_ID=1` / `2`.
+
+### AlgoSorAgent
+
+Start one `oms-launcher` process per physical host (or on the same host as the local OmsNode). `AlgoSorAgent` connects to its co-located OmsNode over Aeron IPC; it does not need network access to follower nodes.
+
 ```bash
-OMS_NODE_ID=1 \
-OMS_AERON_DIR=/tmp/oms-aeron-1 \
-OMS_ARCHIVE_DIR=/tmp/oms-archive-1 \
-OMS_CLUSTER_MEMBERS="0,localhost:9000,..." \
-OMS_CLUSTER_INGRESS_CHANNEL="aeron:udp?endpoint=localhost:9100" \
-OMS_ARCHIVE_CONTROL_CHANNEL="aeron:udp?endpoint=localhost:8110" \
-OMS_ARCHIVE_REPLICATION_CHANNEL="aeron:udp?endpoint=localhost:8120" \
-./run-oms-node.sh
+OMS_AERON_DIR=/dev/shm/oms-aeron-launcher ./run-algo-sor.sh
 ```
 
-**Terminal 3 — node 2:** same pattern with `OMS_NODE_ID=2` and ports `9200`, `8210`, `8220`.
+### Verifying leadership
 
-Raft elects one leader (watch for `role=LEADER` in the logs of one terminal). The other two log `role=FOLLOWER`. The harness or FIX client connects to the leader's `OMS_CLUSTER_INGRESS_CHANNEL` endpoint.
+Watch the logs of all three nodes. The elected leader logs:
+```
+INFO  OmsClusteredService - OMS cluster role changed: FOLLOWER → LEADER
+```
+The other two log `FOLLOWER`.
 
-For a real multi-host deployment replace `localhost` with each node's actual IP address in `OMS_CLUSTER_MEMBERS` and the per-node channel env vars.
+### Client connectivity
+
+The harness (or FIX bridge) connects to `OMS_CLUSTER_INGRESS_CHANNEL` of the current leader. Aeron Cluster sessions are automatically redirected if the leader changes — reconnect to the new leader's endpoint after the election completes.
+
+### Operational checklist
+
+- [ ] `OMS_ARCHIVE_DIR` points to a durable filesystem (not `/tmp`, not tmpfs)
+- [ ] Archive dir has adequate disk space (Raft log + snapshots, at least 20 GB)
+- [ ] `OMS_ARCHIVE_REPLICATION_CHANNEL` uses a fixed port reachable by peer nodes
+- [ ] Three nodes are on separate physical hosts or failure domains
+- [ ] `OMS_ARCHIVE_DELETE_ON_START=false` (default) — do not set to true in production
+- [ ] `OMS_SYMBOLS` and `OMS_MAX_NOTIONAL` are identical on all three nodes
+- [ ] Monitor logs for `WARN algo-sor disconnected` (P6 — algo-sor IPC image loss)
+
+### Snapshot management
+
+Snapshots are taken automatically every 5 minutes by a Raft timer. To force an immediate snapshot (e.g. before planned maintenance):
+
+```bash
+# Using the Aeron ClusterTool (in the aeron-cluster jar)
+java -cp oms-core/build/install/oms-core/lib/aeron-cluster-*.jar \
+     io.aeron.cluster.ClusterTool \
+     $OMS_ARCHIVE_DIR/cluster snapshot
+```
 
 ---
 
@@ -413,6 +490,7 @@ For a real multi-host deployment replace `localhost` with each node's actual IP 
 | `io.aeron:aeron-client` | 1.47.0 |
 | `org.agrona:agrona` | 2.0.1 |
 | `ch.qos.logback:logback-classic` | 1.5.6 |
+| `org.junit.jupiter:junit-jupiter` | 5.11.4 |
 
 All versions are declared in `gradle/libs.versions.toml`.
 
@@ -422,11 +500,11 @@ All versions are declared in `gradle/libs.versions.toml`.
 
 ### Why Aeron Cluster and not Kafka?
 
-Kafka's consumer model is pull-based with polling latency added on top of replication. Aeron Cluster's `onSessionMessage()` fires only after quorum commit — the processing latency equals the replication latency with nothing added. For a state machine that must guarantee ordering and exactly-once processing, Aeron Cluster's model is correct by construction.
+Kafka's consumer model is pull-based — polling latency adds on top of replication. Aeron Cluster's `onSessionMessage()` fires only after quorum commit: processing latency equals replication latency with nothing added. For a state machine that must guarantee ordering and exactly-once processing, Aeron Cluster's model is correct by construction.
 
-### Why algo-sor is stateless
+### Why algo-sor is a separate process
 
-Algo engines are computation-driven, not state-driven. Embedding them in the `ClusteredService` would replicate ephemeral slice-scheduling state across Raft nodes unnecessarily. The intent-based separation means `algo-sor` can be upgraded, restarted, or replaced independently of the cluster. Its statelessness also means the `ChildOrderIntentValidator`'s over-allocation guard is the sole protection against over-allocation after parent state changes.
+Embedding algo engines in the `ClusteredService` would replicate ephemeral slice-scheduling state across Raft nodes unnecessarily and couple SOR algorithm changes to cluster restarts. The intent-based separation means `algo-sor` can be upgraded, restarted, or replaced independently. Its in-process state (IcebergAlgoEngine, TwapAlgoEngine) is deliberately non-durable; `ChildOrderIntentValidator` rule 7 and `republishRoutingOrders()` on leader promotion handle recovery transparently.
 
 ### Why fixed-point longs for prices
 
@@ -434,7 +512,11 @@ Algo engines are computation-driven, not state-driven. Embedding them in the `Cl
 
 ### Why ClusterMessageType framing on cluster ingress, not FIX Binary
 
-The Aeron Cluster client API is a binary transport — it has no concept of FIX fields. `FIXMessageDecoder` operates on a pre-parsed compact FIX Binary format that the upstream FIX engine produces. Using FIX Binary on the cluster ingress would couple the cluster wire protocol to a specific FIX engine's internal format and require the cluster client to know FIX ASCII byte values. `ClusterMessageType` + `OrderLayout` is self-contained within `oms-codec` and lets any client (harness, FIX bridge, test tool) submit orders without FIX knowledge.
+`FIXMessageDecoder` operates on a compact FIX Binary format produced by an upstream FIX engine (stream 11). Using FIX Binary on the cluster ingress would couple the cluster wire protocol to a specific FIX engine's internal format. `ClusterMessageType` + `OrderLayout` is self-contained within `oms-codec` and lets any client (harness, FIX bridge, test tool) submit orders without FIX knowledge.
+
+### Why ChildOrderRegistry is snapshotted separately from OrderBook
+
+`OrderBook` uses `OrderLayout.MESSAGE_SIZE` (80 bytes) per parent record in the snapshot to minimise snapshot size. `ChildOrderRegistry` uses full `BLOCK_LENGTH` (128 bytes) per child record because children carry sibling-link fields (`nextSiblingSlot`, `parentOrFirstChildId`) that are essential for fill aggregation. Mixing them into one store would require padding all parent records to 128 bytes, adding ~3 MB to the snapshot for no benefit.
 
 ---
 
