@@ -92,11 +92,11 @@ Components in this section own the stateful, Raft-replicated runtime of MarketOM
 **Class:** `com.cobain.oms.cluster.SnapshotManager`
 **Module:** `oms-core`
 **Thread model:** called from the Raft commit thread during `onTakeSnapshot()` and `onStart()`; not called during normal order processing
-**Zero-allocation contract:** `snapshotBuffer` is a pre-allocated `UnsafeBuffer` backed by a `ByteBuffer.allocateDirect(MAX_SNAPSHOT_BYTES)` at construction — no runtime allocation during snapshot/restore
-**Inputs:** `takeSnapshot(OrderBook, ValidationEngine, ChildOrderRegistry, ExclusivePublication, IdleStrategy)`, `loadSnapshot(Image, OrderBook, ValidationEngine, ChildOrderRegistry, IdleStrategy)`
+**Zero-allocation contract:** `snapshotBuffer` is a pre-allocated `UnsafeBuffer` backed by `ByteBuffer.allocateDirect()` in `SnapshotManager(int maxOrders, int maxChildren)` — no runtime allocation during snapshot/restore
+**Inputs:** `SnapshotManager(int maxOrders, int maxChildren)` (no-arg delegates to defaults); `takeSnapshot(...)`, `loadSnapshot(...)`
 **Outputs:** serialized snapshot offered to `snapshotPublication`; `OrderBook.restoreOrder()`, `ValidationEngine.restoreEntry()`, and `ChildOrderRegistry.restore()` called during load
-**Invariants:** `SNAPSHOT_VERSION = 2`; `HEADER_SIZE = 16`; `DEDUP_ENTRY_SIZE = 16`; `MAX_SNAPSHOT_BYTES = 16 + 65_536 × 80 + 65_536 × 16 + 4 + 32_768 × 128 ≈ 10.5 MB`; snapshot wire order: header → parent order records → dedup entries → child registry (self-describing int count + records)
-**Failure mode:** Version mismatch throws `IllegalStateException` — wipe archive dir and restart with `OMS_ARCHIVE_DELETE_ON_START=true` when upgrading snapshot format
+**Invariants:** `SNAPSHOT_VERSION = 3`; `HEADER_SIZE = 24`; `DEDUP_ENTRY_SIZE = 16`; buffer size = `24 + maxOrders×80 + maxOrders×16 + 4 + maxChildren×128`; header includes `snapshotMaxOrders` at [16] and `snapshotMaxChildren` at [20]; restore validates current capacity ≥ snapshot capacity
+**Failure mode:** Version mismatch or capacity downsize throws `IllegalStateException` — wipe archive and restart with `OMS_ARCHIVE_DELETE_ON_START=true`
 
 ---
 
@@ -106,9 +106,10 @@ Components in this section own the stateful, Raft-replicated runtime of MarketOM
 **Module:** `oms-core`
 **Thread model:** single-threaded Raft commit thread (Aeron Cluster `ClusteredService` contract); `intentFragmentHandler` is called from within `onSessionMessage()` and `onTimerEvent()` — same thread
 **Zero-allocation contract:** All components pre-allocated in constructor; `algoOutbound` (129 bytes), `egressBuffer` (129 bytes), `intentView`, `decodeFlyweight` all pre-allocated; `intentFragmentHandler` is a pre-allocated method reference (not a lambda)
+**Constructor:** `OmsClusteredService(algoSorPublication, clientPublication, intentSub, maxNotional, maxOrders, maxChildren, intentFragmentLimit, permittedSymbols...)` — env vars `OMS_MAX_ORDERS` (default 65_536), `OMS_MAX_CHILDREN` (default 32_768), `OMS_INTENT_FRAGMENT_LIMIT` (default 20) read by `OmsNode` and passed in
 **Inputs:** `onSessionMessage()` (Raft commit), `onTimerEvent()` (Raft timer), `onStart()` (snapshot restore), `onTakeSnapshot()` (snapshot write)
 **Outputs:** `algoSorPublication.offer()` on stream 30; `session.offer()` (egress) on cluster egress; `fixEncoder.sendNewOrderSingle()` on stream 10
-**Invariants:** `pollIntents()` is called at the start of every `onSessionMessage()` and `onTimerEvent()` to drain pending intents on the cluster thread; `ParentOrderState.registerTransitions()` called in `onStart()` before snapshot load; `nextOrderId` increments monotonically and is recomputed after restore by scanning both `OrderBook` and `ChildOrderRegistry`; `republishRoutingOrders()` called after every `onStart()` to re-route NEW/ROUTING/PARTIALLY_FILLED parents
+**Invariants:** `pollIntents()` is called at the start of every `onSessionMessage()` and `onTimerEvent()` to drain pending intents on the cluster thread; `intentFragmentLimit` is an instance field (configurable, not static); `ParentOrderState.registerTransitions()` called in `onStart()` before snapshot load; `nextOrderId` increments monotonically and is recomputed after restore by scanning both `OrderBook` and `ChildOrderRegistry`; `republishRoutingOrders()` called after every `onStart()` to re-route NEW/ROUTING/PARTIALLY_FILLED parents
 **Failure mode:** A crash between `childRegistry.createChild()` and `fixEncoder.sendNewOrderSingle()` leaves a child in the registry with no corresponding NOS sent; reconciled via FIX OrderStatusRequest (35=H) on reconnect
 
 ---
@@ -139,9 +140,10 @@ never reference `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`.
 **Module:** `algo-sor`
 **Thread model:** single-threaded `AgentRunner` (dedicated OS thread via `AgentRunner.startOnThread()`); `doWork()` is the duty cycle
 **Zero-allocation contract:** `payloadBuffer` (zero-length `UnsafeBuffer` re-wrapped on each fragment — no allocation), `parentView` (pre-allocated flyweight), `intentOfferBuffer` (`HEADER_LENGTH + BLOCK_LENGTH = 64` bytes pre-allocated); header bytes written once at construction
-**Inputs:** `doWork()` polls `parentOrderSub` (stream 30) with `FRAGMENT_LIMIT = 10` fragments per cycle
+**Constructor:** `AlgoSorAgent(parentOrderSub, intentPub, icebergEngine, twapEngine, sor, fragmentLimit, maxVenues)` — `OmsLauncher` reads `OMS_ALGO_FRAGMENT_LIMIT` (default 10) and `OMS_MAX_VENUES` (default 10)
+**Inputs:** `doWork()` polls `parentOrderSub` (stream 30) with `fragmentLimit` fragments per cycle (instance field, not static)
 **Outputs:** `intentPub.offer()` on stream 12 via `publishIntent()`; spins with `Thread.onSpinWait()` on back-pressure — never sleeps
-**Invariants:** `FRAGMENT_LIMIT = 10`; publishes ONLY `CHILD_ORDER_INTENT (40)` messages; never calls `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`; `SmartOrderRouter` reuses a single pre-allocated `intent` flyweight per `route()` call
+**Invariants:** `fragmentLimit` is an instance field (default 10 via `OMS_ALGO_FRAGMENT_LIMIT`); venue arrays (`venueIds`, `venuePrices`, `venueQtys`) pre-allocated at `maxVenues` in constructor; publishes ONLY `CHILD_ORDER_INTENT (40)` messages; never calls `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`; `SmartOrderRouter` reuses a single pre-allocated `intent` flyweight per `route()` call
 **Failure mode:** Back-pressure on `intentPub` spins indefinitely if `oms-core` is not consuming from stream 12; `Publication.CLOSED` exits the spin without error
 
 ---
@@ -154,5 +156,6 @@ never reference `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`.
 **Zero-allocation contract:** Single `ChildOrderIntentFlyweight intent` pre-allocated via `ChildOrderIntentFlyweight.allocate()` in constructor; all arithmetic in longs; `sink.onIntent(intent)` is called with the same `intent` instance for every slice
 **Inputs:** `route(OrderFlyweight, int[], long[], long[], int, ChildIntentSink)` called from `AlgoSorAgent.onFragment()`
 **Outputs:** calls `sink.onIntent(intent)` once per venue slice; returns count of intents published
-**Invariants:** `MAX_VENUES = 10`; if no venue matches, routes entire qty to venue ID 1 at `parent.price()`; `intent` is reused — callers must copy before calling `onIntent()` returns
+**Constructor:** `SmartOrderRouter(int maxVenues)` — `OmsLauncher` reads `OMS_MAX_VENUES` (default 10); no-arg delegates to `MAX_VENUES` default
+**Invariants:** `maxVenues` is an instance field (default `MAX_VENUES = 10`); if no venue matches, routes entire qty to venue ID 1 at `parent.price()`; `intent` is reused — callers must copy before calling `onIntent()` returns
 **Failure mode:** `sink.onIntent(intent)` retaining the reference beyond the call boundary reads stale data from the next slice; venue ID 0 is skipped (treated as inactive)

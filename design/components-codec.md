@@ -79,10 +79,11 @@ wire-format and constant classes — no Aeron Cluster dependency, no runtime sta
 **Class:** `com.cobain.oms.core.OrderBook` (physically in `oms-codec` module — see anomaly in principles.md Section 3.1)
 **Module:** `oms-codec` (compile), `oms-core` (runtime ownership)
 **Thread model:** single-threaded; `flyweight` is shared across all callers — not safe for concurrent use
-**Zero-allocation contract:** All state is pre-allocated in constructor: `byte[]` backing array (65,536 × 128 bytes = 8 MB), two `Long2LongHashMap` indexes, one `int[]` free-slot stack, two `OrderFlyweight` instances
-**Inputs:** `allocateSlot()`, `index()`, `wrapFlyweight()`, `freeSlot()`, `unindex()`, `restoreOrder()`
+**Constructor:** `OrderBook(int maxOrders)` — `OmsNode` reads `OMS_MAX_ORDERS` (default `MAX_ORDERS = 65_536`) and passes to `OmsClusteredService`; no-arg constructor delegates to `MAX_ORDERS` default
+**Zero-allocation contract:** All state pre-allocated in constructor: `byte[]` backing array (`maxOrders × MESSAGE_SIZE`), two `Long2LongHashMap` indexes, one `int[]` free-slot stack, two `OrderFlyweight` instances
+**Inputs:** `allocateSlot()`, `index()`, `wrapFlyweight()`, `freeSlot()`, `unindex()`, `restoreOrder()`; `maxOrders()` getter for use by `SnapshotManager`
 **Outputs:** `wrapFlyweight(slot)` returns `flyweight` (shared — caller must not retain); `buffer()` returns the raw `UnsafeBuffer`; `slotByOrderId()` / `slotByClOrdId()` return slot index or -1
-**Invariants:** `MAX_ORDERS = 65_536`; `EMPTY = Long.MIN_VALUE`; `freeTop == 0` means full (`allocateSlot()` returns -1); `slotToOrderId[slot] == 0L` means free
+**Invariants:** `MAX_ORDERS = 65_536` (default constant); `EMPTY = Long.MIN_VALUE`; `freeTop == 0` means full (`allocateSlot()` returns -1); `slotToOrderId[slot] == 0L` means free; `reset()` iterates `maxOrders` (instance field, not static constant)
 **Failure mode:** Calling `wrapFlyweight()` on a freed slot gives a flyweight pointing at zeroed bytes with no error; `freeSlot()` without `unindex()` leaves stale entries in the maps causing phantom lookups
 
 ---
