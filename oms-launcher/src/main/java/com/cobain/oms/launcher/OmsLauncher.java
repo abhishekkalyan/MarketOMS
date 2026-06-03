@@ -33,7 +33,8 @@ public final class OmsLauncher {
 
     public static void main(final String[] args) throws Exception {
 
-        final String aeronDir = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-launcher");
+        final String aeronDir        = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-launcher");
+        final int    algoFragmentLimit = intEnv("OMS_ALGO_FRAGMENT_LIMIT", 10);
 
         log.info("Starting OmsLauncher — Aeron version: {}",
                  io.aeron.Aeron.class.getPackage().getImplementationVersion());
@@ -79,7 +80,8 @@ public final class OmsLauncher {
                 intentPub,
                 icebergEngine,
                 twapEngine,
-                sor);
+                sor,
+                algoFragmentLimit);
 
         final AgentRunner agentRunner = new AgentRunner(
                 new BusySpinIdleStrategy(),
@@ -108,6 +110,11 @@ public final class OmsLauncher {
     private static String env(final String key, final String defaultValue) {
         final String v = System.getenv(key);
         return (v != null && !v.isEmpty()) ? v : defaultValue;
+    }
+
+    private static int intEnv(final String key, final int defaultValue) {
+        final String v = System.getenv(key);
+        return (v != null && !v.isEmpty()) ? Integer.parseInt(v) : defaultValue;
     }
 
     private OmsLauncher() {}

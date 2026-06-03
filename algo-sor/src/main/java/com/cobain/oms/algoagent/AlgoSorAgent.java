@@ -36,7 +36,7 @@ import org.agrona.concurrent.UnsafeBuffer;
  */
 public final class AlgoSorAgent implements Agent, FragmentHandler {
 
-    private static final int FRAGMENT_LIMIT = 10;
+    private final int fragmentLimit;
 
     // ── Aeron channels ────────────────────────────────────────────────────────
     private final Subscription         parentOrderSub; // stream STREAM_PARENT_ORDERS
@@ -76,8 +76,10 @@ public final class AlgoSorAgent implements Agent, FragmentHandler {
             final ExclusivePublication  intentPub,
             final IcebergAlgoEngine     icebergEngine,
             final TwapAlgoEngine        twapEngine,
-            final SmartOrderRouter      sor) {
+            final SmartOrderRouter      sor,
+            final int                   fragmentLimit) {
 
+        this.fragmentLimit   = fragmentLimit;
         this.parentOrderSub  = parentOrderSub;
         this.intentPub       = intentPub;
         this.icebergEngine   = icebergEngine;
@@ -97,7 +99,7 @@ public final class AlgoSorAgent implements Agent, FragmentHandler {
 
     @Override
     public int doWork() {
-        return parentOrderSub.poll(this, FRAGMENT_LIMIT);
+        return parentOrderSub.poll(this, fragmentLimit);
     }
 
     @Override
