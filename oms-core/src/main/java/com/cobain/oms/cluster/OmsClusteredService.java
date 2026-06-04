@@ -138,9 +138,7 @@ public final class OmsClusteredService implements ClusteredService {
 
         recomputeNextOrderId();
         republishRoutingOrders();
-
-        // Schedule periodic snapshot timer — fires every SNAPSHOT_INTERVAL_NS.
-        cluster.scheduleTimer(SNAPSHOT_TIMER_ID, cluster.time() + SNAPSHOT_INTERVAL_NS);
+        // Snapshot timer is scheduled in onNewLeadershipTermEvent — not allowed here.
     }
 
     @Override
@@ -235,6 +233,8 @@ public final class OmsClusteredService implements ClusteredService {
             final TimeUnit timeUnit,
             final int  appVersion) {
         log.info("New leadership term: leaderMemberId={} termId={}", leaderMemberId, leadershipTermId);
+        // Schedule the periodic snapshot timer here, where cluster operations are allowed.
+        cluster.scheduleTimer(SNAPSHOT_TIMER_ID, cluster.time() + SNAPSHOT_INTERVAL_NS);
     }
 
     // ── Intent polling ────────────────────────────────────────────────────────
