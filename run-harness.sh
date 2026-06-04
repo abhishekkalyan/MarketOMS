@@ -23,6 +23,7 @@ export OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,local
 
 export HARNESS_AERON_DIR="/tmp/oms-aeron-harness"
 export HARNESS_CLUSTER_INGRESS="${HARNESS_CLUSTER_INGRESS:-0=localhost:9000}"
+LAUNCHER_AERON_DIR="/tmp/oms-aeron-launcher"
 
 NODE_LOG="/tmp/oms-node-harness.log"
 LAUNCHER_LOG="/tmp/oms-launcher-harness.log"
@@ -32,17 +33,79 @@ OMS_LAUNCHER_PID=""
 HARNESS_PID=""
 HARNESS_EXIT=1
 
+# Derive cluster port list from OMS_CLUSTER_MEMBERS once, for use in cleanup.
+# Format: nodeId,host:port,host:port,... — extract every field that contains ':'
+IFS=',' read -ra _MF <<< "${OMS_CLUSTER_MEMBERS}"
+CLUSTER_PORTS=()
+for _f in "${_MF[@]}"; do
+    [[ "${_f}" == *:* ]] && CLUSTER_PORTS+=("${_f##*:}")
+done
+unset _MF _f
+
 # ── Cleanup ────────────────────────────────────────────────────────────────────
+_CLEANED=false
 cleanup() {
+    [[ "${_CLEANED}" == "true" ]] && return
+    _CLEANED=true
     echo ""
     echo "Stopping OMS stack..."
-    [[ -n "${HARNESS_PID}"   ]] && kill "${HARNESS_PID}"   2>/dev/null || true
-    [[ -n "${OMS_LAUNCHER_PID}" ]] && kill "${OMS_LAUNCHER_PID}" 2>/dev/null || true
-    [[ -n "${OMS_NODE_PID}"  ]] && kill "${OMS_NODE_PID}"  2>/dev/null || true
-    # Wait only on the PIDs we started — avoids hanging on unrelated background jobs.
-    for pid in "${HARNESS_PID}" "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
-        [[ -n "${pid}" ]] && wait "${pid}" 2>/dev/null || true
+
+    # Phase 1 — SIGTERM all tracked processes
+    local _sent_term=false
+    for _pid in "${HARNESS_PID}" "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
+        if [[ -n "${_pid}" ]] && kill -0 "${_pid}" 2>/dev/null; then
+            kill "${_pid}" 2>/dev/null && _sent_term=true || true
+        fi
     done
+
+    # Phase 2 — give them 2 s to exit, then SIGKILL survivors
+    if [[ "${_sent_term}" == "true" ]]; then
+        sleep 2
+    fi
+    for _pid in "${HARNESS_PID}" "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
+        if [[ -n "${_pid}" ]] && kill -0 "${_pid}" 2>/dev/null; then
+            echo "  SIGKILL PID ${_pid} (did not stop after SIGTERM)"
+            kill -9 "${_pid}" 2>/dev/null || true
+        fi
+    done
+
+    # Phase 3 — kill any process still holding a cluster port
+    local _holders
+    for _port in "${CLUSTER_PORTS[@]}"; do
+        _holders=$(lsof -ti :"${_port}" 2>/dev/null) || true
+        if [[ -n "${_holders}" ]]; then
+            echo "  Killing port-${_port} holder(s): ${_holders}"
+            # word-split intentional: _holders is a newline-separated list of PIDs
+            # shellcheck disable=SC2086
+            kill -9 ${_holders} 2>/dev/null || true
+        fi
+    done
+
+    # Phase 4 — remove all Aeron / archive directories this script created
+    rm -rf "${OMS_AERON_DIR}" "${OMS_ARCHIVE_DIR}" "${HARNESS_AERON_DIR}" "${LAUNCHER_AERON_DIR}"
+
+    # Phase 5 — wait up to 10 s for all cluster ports to be confirmed free
+    local _ports_free=false _dl=$(( SECONDS + 10 ))
+    while [[ $SECONDS -lt $_dl ]]; do
+        _ports_free=true
+        for _port in "${CLUSTER_PORTS[@]}"; do
+            if lsof -ti :"${_port}" &>/dev/null; then
+                _ports_free=false
+                break
+            fi
+        done
+        [[ "${_ports_free}" == "true" ]] && break
+        sleep 1
+    done
+    if [[ "${_ports_free}" == "false" ]]; then
+        echo "WARNING: cluster ports still in use after 10 s — next run may fail"
+    fi
+
+    # Phase 6 — reap background jobs so the shell exits cleanly
+    for _pid in "${HARNESS_PID}" "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
+        [[ -n "${_pid}" ]] && wait "${_pid}" 2>/dev/null || true
+    done
+
     echo "Stack stopped. Harness exit code: ${HARNESS_EXIT}"
 }
 trap cleanup EXIT INT TERM
@@ -53,8 +116,8 @@ echo "Building all modules..."
 echo "Build OK."
 
 # ── 2. Clean Aeron dirs ────────────────────────────────────────────────────────
-rm -rf "${OMS_AERON_DIR}" "${OMS_ARCHIVE_DIR}" "${HARNESS_AERON_DIR}"
-mkdir -p "${OMS_AERON_DIR}" "${OMS_ARCHIVE_DIR}" "${HARNESS_AERON_DIR}"
+rm -rf "${OMS_AERON_DIR}" "${OMS_ARCHIVE_DIR}" "${HARNESS_AERON_DIR}" "${LAUNCHER_AERON_DIR}"
+mkdir -p "${OMS_AERON_DIR}" "${OMS_ARCHIVE_DIR}" "${HARNESS_AERON_DIR}" "${LAUNCHER_AERON_DIR}"
 
 # ── 3. Start OmsNode ──────────────────────────────────────────────────────────
 echo "Starting OmsNode (node ${OMS_NODE_ID})... logging to ${NODE_LOG}"
@@ -95,7 +158,7 @@ echo " ready."
 
 # ── 5. Start AlgoSorAgent ─────────────────────────────────────────────────────
 echo "Starting AlgoSorAgent... logging to ${LAUNCHER_LOG}"
-OMS_AERON_DIR="/tmp/oms-aeron-launcher" \
+OMS_AERON_DIR="${LAUNCHER_AERON_DIR}" \
     oms-launcher/build/install/oms-launcher/bin/oms-launcher \
     > "${LAUNCHER_LOG}" 2>&1 &
 OMS_LAUNCHER_PID=$!

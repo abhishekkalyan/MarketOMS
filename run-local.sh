@@ -31,17 +31,79 @@ LAUNCHER_LOG="/tmp/oms-launcher.log"
 OMS_NODE_PID=""
 OMS_LAUNCHER_PID=""
 
+# Derive cluster port list from OMS_CLUSTER_MEMBERS once, for use in cleanup.
+# Format: nodeId,host:port,host:port,... — extract every field that contains ':'
+IFS=',' read -ra _MF <<< "${OMS_CLUSTER_MEMBERS}"
+CLUSTER_PORTS=()
+for _f in "${_MF[@]}"; do
+    [[ "${_f}" == *:* ]] && CLUSTER_PORTS+=("${_f##*:}")
+done
+unset _MF _f
+
 # ── Cleanup on exit ────────────────────────────────────────────────────────────
+_CLEANED=false
 cleanup() {
+    [[ "${_CLEANED}" == "true" ]] && return
+    _CLEANED=true
     echo ""
     echo "Shutting down..."
-    if [[ -n "${OMS_LAUNCHER_PID}" ]]; then
-        kill "${OMS_LAUNCHER_PID}" 2>/dev/null && echo "  AlgoSorAgent stopped (PID ${OMS_LAUNCHER_PID})"
+
+    # Phase 1 — SIGTERM all tracked processes
+    local _sent_term=false
+    for _pid in "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
+        if [[ -n "${_pid}" ]] && kill -0 "${_pid}" 2>/dev/null; then
+            kill "${_pid}" 2>/dev/null && _sent_term=true || true
+        fi
+    done
+
+    # Phase 2 — give them 2 s to exit, then SIGKILL survivors
+    if [[ "${_sent_term}" == "true" ]]; then
+        sleep 2
     fi
-    if [[ -n "${OMS_NODE_PID}" ]]; then
-        kill "${OMS_NODE_PID}" 2>/dev/null && echo "  OmsNode stopped (PID ${OMS_NODE_PID})"
+    for _pid in "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
+        if [[ -n "${_pid}" ]] && kill -0 "${_pid}" 2>/dev/null; then
+            echo "  SIGKILL PID ${_pid} (did not stop after SIGTERM)"
+            kill -9 "${_pid}" 2>/dev/null || true
+        fi
+    done
+
+    # Phase 3 — kill any process still holding a cluster port
+    local _holders
+    for _port in "${CLUSTER_PORTS[@]}"; do
+        _holders=$(lsof -ti :"${_port}" 2>/dev/null) || true
+        if [[ -n "${_holders}" ]]; then
+            echo "  Killing port-${_port} holder(s): ${_holders}"
+            # word-split intentional: _holders is a newline-separated list of PIDs
+            # shellcheck disable=SC2086
+            kill -9 ${_holders} 2>/dev/null || true
+        fi
+    done
+
+    # Phase 4 — remove all Aeron / archive directories this script created
+    rm -rf "${OMS_AERON_DIR}" "${OMS_ARCHIVE_DIR}" "${OMS_LAUNCHER_AERON_DIR}"
+
+    # Phase 5 — wait up to 10 s for all cluster ports to be confirmed free
+    local _ports_free=false _dl=$(( SECONDS + 10 ))
+    while [[ $SECONDS -lt $_dl ]]; do
+        _ports_free=true
+        for _port in "${CLUSTER_PORTS[@]}"; do
+            if lsof -ti :"${_port}" &>/dev/null; then
+                _ports_free=false
+                break
+            fi
+        done
+        [[ "${_ports_free}" == "true" ]] && break
+        sleep 1
+    done
+    if [[ "${_ports_free}" == "false" ]]; then
+        echo "WARNING: cluster ports still in use after 10 s — next run may fail"
     fi
-    wait 2>/dev/null
+
+    # Phase 6 — reap background jobs so the shell exits cleanly
+    for _pid in "${OMS_LAUNCHER_PID}" "${OMS_NODE_PID}"; do
+        [[ -n "${_pid}" ]] && wait "${_pid}" 2>/dev/null || true
+    done
+
     echo "Shutdown complete."
 }
 trap cleanup EXIT INT TERM
