@@ -85,6 +85,22 @@ until find "${OMS_AERON_DIR}" -name "cnc.dat" 2>/dev/null | grep -q cnc.dat; do
 done
 echo " ready."
 
+# ── 4b. Wait for cluster ingress to accept connections (port 9000) ─────────────
+# Aeron Cluster's startup canvass phase (default 60s) must complete before the
+# ConsensusModule binds the cluster ingress. Poll until port 9000 is active.
+echo -n "  Waiting for cluster ingress (port 9000)"
+WAITED=0
+until netstat -an 2>/dev/null | grep -q "\.9000 "; do
+    sleep 2; WAITED=$((WAITED + 2)); echo -n "."
+    if [[ ${WAITED} -ge 90 ]]; then
+        echo ""; echo "ERROR: Cluster ingress never appeared on port 9000. See ${NODE_LOG}"; tail -20 "${NODE_LOG}"; exit 1
+    fi
+    if ! kill -0 "${OMS_NODE_PID}" 2>/dev/null; then
+        echo ""; echo "ERROR: OmsNode exited. See ${NODE_LOG}"; tail -20 "${NODE_LOG}"; exit 1
+    fi
+done
+echo " ready."
+
 # ── 5. Start AlgoSorAgent ─────────────────────────────────────────────────────
 echo "Starting AlgoSorAgent... logging to ${LAUNCHER_LOG}"
 OMS_AERON_DIR="/tmp/oms-aeron-launcher" \

@@ -126,6 +126,10 @@ public final class OmsNode {
         // In Aeron 1.40+, clusterMemberId(int) identifies this node within the cluster members
         // string (replaces the older memberId / clusterMembersStatusEndpoints API).
         final java.io.File clusterDir = new java.io.File(archiveDir + "/cluster");
+        // Startup canvass timeout: how long the ConsensusModule waits for other members
+        // before declaring itself leader. Default is 60s which is too long for dev/test.
+        // Set OMS_STARTUP_CANVASS_TIMEOUT_MS to reduce (default 5000ms = 5 seconds for single-node dev).
+        final long startupCanvassTimeoutMs = longEnv("OMS_STARTUP_CANVASS_TIMEOUT_MS", 5_000L);
         final ConsensusModule.Context consensusCtx = new ConsensusModule.Context()
                 .aeronDirectoryName(aeronDir)
                 .archiveContext(new AeronArchive.Context()
@@ -136,6 +140,7 @@ public final class OmsNode {
                 .replicationChannel(replicationChannel)
                 .clusterMembers(clusterMembers)
                 .clusterMemberId(nodeId)
+                .startupCanvassTimeoutNs(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupCanvassTimeoutMs))
                 .deleteDirOnStart(deleteArchiveOnStart)
                 .clusterDir(clusterDir);
 
@@ -277,6 +282,11 @@ public final class OmsNode {
     private static boolean boolEnv(final String key, final boolean defaultValue) {
         final String v = System.getenv(key);
         return (v != null && !v.isEmpty()) ? Boolean.parseBoolean(v) : defaultValue;
+    }
+
+    private static long longEnv(final String key, final long defaultValue) {
+        final String v = System.getenv(key);
+        return (v != null && !v.isEmpty()) ? Long.parseLong(v) : defaultValue;
     }
 
     private OmsNode() {}
