@@ -126,10 +126,12 @@ public final class OmsNode {
         // In Aeron 1.40+, clusterMemberId(int) identifies this node within the cluster members
         // string (replaces the older memberId / clusterMembersStatusEndpoints API).
         final java.io.File clusterDir = new java.io.File(archiveDir + "/cluster");
-        // Startup canvass timeout: how long the ConsensusModule waits for other members
-        // before declaring itself leader. Default is 60s which is too long for dev/test.
-        // Set OMS_STARTUP_CANVASS_TIMEOUT_MS to reduce (default 5000ms = 5 seconds for single-node dev).
-        final long startupCanvassTimeoutMs = longEnv("OMS_STARTUP_CANVASS_TIMEOUT_MS", 5_000L);
+        // Reduce Raft election timeouts for single-node dev. Defaults would make the node
+        // wait up to 60s (canvass) before binding the cluster ingress on port 9000.
+        // leaderHeartbeatTimeoutNs must be set before startupCanvassTimeoutNs because the
+        // ConsensusModule validates: startupCanvassTimeoutNs >= 2 * leaderHeartbeatTimeoutNs.
+        final long leaderHeartbeatTimeoutNs = java.util.concurrent.TimeUnit.SECONDS.toNanos(2L);
+        final long startupCanvassTimeoutNs  = java.util.concurrent.TimeUnit.SECONDS.toNanos(5L);
         final ConsensusModule.Context consensusCtx = new ConsensusModule.Context()
                 .aeronDirectoryName(aeronDir)
                 .archiveContext(new AeronArchive.Context()
@@ -140,7 +142,8 @@ public final class OmsNode {
                 .replicationChannel(replicationChannel)
                 .clusterMembers(clusterMembers)
                 .clusterMemberId(nodeId)
-                .startupCanvassTimeoutNs(java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(startupCanvassTimeoutMs))
+                .leaderHeartbeatTimeoutNs(leaderHeartbeatTimeoutNs)
+                .startupCanvassTimeoutNs(startupCanvassTimeoutNs)
                 .deleteDirOnStart(deleteArchiveOnStart)
                 .clusterDir(clusterDir);
 
@@ -284,10 +287,6 @@ public final class OmsNode {
         return (v != null && !v.isEmpty()) ? Boolean.parseBoolean(v) : defaultValue;
     }
 
-    private static long longEnv(final String key, final long defaultValue) {
-        final String v = System.getenv(key);
-        return (v != null && !v.isEmpty()) ? Long.parseLong(v) : defaultValue;
-    }
 
     private OmsNode() {}
 }
