@@ -14,6 +14,28 @@ application {
     ]
 }
 
+// ── Performance harness application task ─────────────────────────────────────
+tasks.register('perfHarness', CreateStartScripts) {
+    mainClass     = 'com.cobain.oms.harness.perf.PerfHarnessLauncher'
+    applicationName = 'oms-perf-harness'
+    classpath     = startScripts.classpath
+    outputDir     = startScripts.outputDir
+    defaultJvmOpts = [
+        '--add-opens', 'java.base/jdk.internal.misc=ALL-UNNAMED',
+        '--add-opens', 'java.base/sun.nio.ch=ALL-UNNAMED',
+        '--add-opens', 'java.base/java.lang=ALL-UNNAMED',
+    ]
+}
+startScripts.dependsOn(perfHarness)
+
+tasks.register('installPerfHarnessDist') {
+    dependsOn installDist
+    doLast {
+        // The perf harness script is co-installed alongside oms-harness via the shared installDist
+        logger.lifecycle("Perf harness scripts installed to: ${installDist.destinationDir}/bin/")
+    }
+}
+
 dependencies {
     implementation project(':oms-codec')
     implementation libs.agrona
