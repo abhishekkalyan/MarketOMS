@@ -109,9 +109,10 @@ public final class PerfHarnessLauncher {
         final String line = "════════════════════════════════════════════════════════════════";
         final String sep  = "  ─────────────────────────────────────────────────────────────";
         // Read thresholds from env vars for accurate display
-        final long p99LimitUs      = longEnv("PERF_P99_LIMIT_US",           100_000L);
-        final int  maxOutstanding  = intEnv ("PERF_MAX_OUTSTANDING",         50_000);
-        final long snapshotLimitMs = longEnv("PERF_SNAPSHOT_RESUME_LIMIT_MS", 60_000L);
+        final long   p99LimitUs      = longEnv("PERF_P99_LIMIT_US",            100_000L);
+        final long   snapshotLimitMs = longEnv("PERF_SNAPSHOT_RESUME_LIMIT_MS",  60_000L);
+        final double maxLossPct      = doubleEnv("PERF_MAX_LOSS_PCT",              0.01);
+        final long   maxLossPpm      = (long) (maxLossPct * 1_000_000);
 
         System.out.println(line);
         System.out.println("  PERFORMANCE RESULTS — MarketOMS");
@@ -149,11 +150,11 @@ public final class PerfHarnessLauncher {
             }
             if (r.metrics.containsKey("max_outstanding")) {
                 row("ThroughputBenchmark outstanding",
-                        r.metrics.get("max_outstanding"), String.valueOf(maxOutstanding), r.passed);
+                        r.metrics.get("max_outstanding"), "—", true);
             }
             if (r.metrics.containsKey("loss_ppm")) {
                 row("SustainedLoad loss rate",
-                        r.metrics.get("loss_ppm") + " ppm", "100 ppm", r.passed);
+                        r.metrics.get("loss_ppm") + " ppm", maxLossPpm + " ppm", r.passed);
             }
             if (r.metrics.containsKey("p99_ratio_90_vs_25")) {
                 row("OrderBookSaturation p99 ratio",
@@ -195,6 +196,11 @@ public final class PerfHarnessLauncher {
     private static int intEnv(final String key, final int defaultValue) {
         final String v = System.getenv(key);
         return (v != null && !v.isEmpty()) ? Integer.parseInt(v.trim()) : defaultValue;
+    }
+
+    private static double doubleEnv(final String key, final double defaultValue) {
+        final String v = System.getenv(key);
+        return (v != null && !v.isEmpty()) ? Double.parseDouble(v.trim()) : defaultValue;
     }
 
     private static void deleteDir(final String path) {

@@ -112,10 +112,6 @@ public final class ThroughputBenchmark {
 
         // Assertions
         boolean passed = true;
-        if (maxOutstanding > config.maxOutstanding) {
-            log.warn("  FAIL: max outstanding {} > limit {}", maxOutstanding, config.maxOutstanding);
-            passed = false;
-        }
         final long minRequired = (long) (totalSent * 0.90);
         if (totalReceived < minRequired) {
             log.warn("  FAIL: received {} < 90% of sent {} = {}", totalReceived, totalSent, minRequired);

@@ -89,7 +89,11 @@ public final class PerfExecReportListener implements EgressListener {
             final int leaderMemberId,
             final EventCode code,
             final String detail) {
-        log.debug("Cluster session event: code={}", code);
+        if (code == EventCode.CLOSED || code == EventCode.ERROR) {
+            log.warn("Cluster session event: code={} detail={} — session may be closed", code, detail);
+        } else {
+            log.debug("Cluster session event: code={}", code);
+        }
     }
 
     @Override
