@@ -82,10 +82,10 @@ echo " ready."
 # ConsensusModule binds the cluster ingress. Poll until port 9000 is active.
 echo -n "  Waiting for cluster ingress (port 9000)"
 WAITED=0
-until netstat -an 2>/dev/null | grep -q "\.9000 "; do
-    sleep 2; WAITED=$((WAITED + 2)); echo -n "."
-    if [[ ${WAITED} -ge 90 ]]; then
-        echo ""; echo "ERROR: Cluster ingress never appeared on port 9000. See ${NODE_LOG}"; tail -20 "${NODE_LOG}"; exit 1
+until grep -q "New leadership term" "${NODE_LOG}" 2>/dev/null; do
+    sleep 1; WAITED=$((WAITED + 1)); echo -n "."
+    if [[ ${WAITED} -ge 60 ]]; then
+        echo ""; echo "ERROR: Cluster never elected leader in 60s. See ${NODE_LOG}"; tail -20 "${NODE_LOG}"; exit 1
     fi
     if ! kill -0 "${OMS_NODE_PID}" 2>/dev/null; then
         echo ""; echo "ERROR: OmsNode exited. See ${NODE_LOG}"; tail -20 "${NODE_LOG}"; exit 1
