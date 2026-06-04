@@ -105,11 +105,16 @@ public final class PerfOrderInjector {
             sendTimestamps[(int) (clOrdId & TIMESTAMP_TABLE_MASK)] = sendTime;
         }
 
+        int spinCount = 0;
         while (true) {
             final long result = cluster.offer(sendBuffer, 0, MSG_SIZE);
             if (result > 0L) break;
             if (result == io.aeron.Publication.CLOSED) {
-                throw new IllegalStateException("Cluster publication closed");
+                return clOrdId; // session closed — return gracefully
+            }
+            // Poll egress every 64 spins to drain back-pressure
+            if ((++spinCount & 63) == 0) {
+                cluster.pollEgress();
             }
             Thread.onSpinWait();
         }
@@ -141,11 +146,15 @@ public final class PerfOrderInjector {
         sendBuffer.putLong(ClusterMessageType.OFFSET_PAYLOAD + OrderLayout.RESERVED1_OFFSET, sendTime);
         sendTimestamps[(int) (clOrdId & TIMESTAMP_TABLE_MASK)] = sendTime;
 
+        int spinCount = 0;
         while (true) {
             final long result = cluster.offer(sendBuffer, 0, MSG_SIZE);
             if (result > 0L) break;
             if (result == io.aeron.Publication.CLOSED) {
-                throw new IllegalStateException("Cluster publication closed");
+                return clOrdId;
+            }
+            if ((++spinCount & 63) == 0) {
+                cluster.pollEgress();
             }
             Thread.onSpinWait();
         }

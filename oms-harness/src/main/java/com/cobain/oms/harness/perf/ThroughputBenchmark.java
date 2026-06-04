@@ -20,7 +20,7 @@ public final class ThroughputBenchmark {
 
     private static final Logger log = LoggerFactory.getLogger(ThroughputBenchmark.class);
 
-    private static final int    POLL_EVERY           = 10;
+    private static final int    POLL_EVERY           = 1;
     private static final long   REPORT_INTERVAL_MS   = 5_000L;
     private static final long   ACCOUNT_ID           = 42_001L;
     private static final long   PRICE_FIXED_PT       = 150_0000L;
@@ -57,9 +57,11 @@ public final class ThroughputBenchmark {
         int  sendCount = 0;
 
         while (System.nanoTime() < endNs) {
-            // Back-pressure gate: drain until outstanding drops below threshold
+            // Back-pressure gate: drain until outstanding drops below threshold (1s max)
             if (listener.outstanding() >= config.maxOutstanding) {
-                while (listener.outstanding() >= config.maxOutstanding) {
+                final long bpDeadline = System.currentTimeMillis() + 1_000L;
+                while (listener.outstanding() >= config.maxOutstanding
+                        && System.currentTimeMillis() < bpDeadline) {
                     listener.poll(cluster);
                     Thread.onSpinWait();
                 }

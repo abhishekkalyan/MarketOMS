@@ -162,21 +162,23 @@ public final class SnapshotRecoveryBenchmark {
 
     private boolean triggerSnapshot() {
         try {
-            // Map the OmsNode Aeron counters and find the cluster control toggle
-            final CountersReader counters = ClusterControl.mapCounters(omsAeronDir);
-            final AtomicCounter  toggle   = ClusterControl.findControlToggle(counters,
-                    intEnv("OMS_NODE_ID", 0));
-            if (toggle == null) {
-                log.warn("  ClusterControl toggle not found in {}", omsAeronDir);
+            final java.io.File cncFile = new java.io.File(omsAeronDir, "cnc.dat");
+            if (!cncFile.exists()) {
+                log.warn("  cnc.dat not found: {}", cncFile);
                 return false;
             }
-            final boolean applied = ToggleState.SNAPSHOT.toggle(toggle);
-            if (applied) {
-                log.info("  ToggleState.SNAPSHOT toggled on OmsNode cluster control");
-            } else {
-                log.warn("  ToggleState.SNAPSHOT toggle returned false (cluster busy?)");
+            final CountersReader counters = ClusterControl.mapCounters(cncFile);
+            // Try clusterId 0 and 1 (OMS_NODE_ID is the memberId, clusterId is always 0)
+            for (int clusterId = 0; clusterId <= 1; clusterId++) {
+                final AtomicCounter toggle = ClusterControl.findControlToggle(counters, clusterId);
+                if (toggle != null) {
+                    final boolean applied = ToggleState.SNAPSHOT.toggle(toggle);
+                    log.info("  ToggleState.SNAPSHOT toggle applied={} for clusterId={}", applied, clusterId);
+                    return applied;
+                }
             }
-            return applied;
+            log.warn("  ClusterControl toggle not found in {}", cncFile);
+            return false;
         } catch (final Exception e) {
             log.warn("  Failed to trigger snapshot via ClusterControl: {}", e.getMessage());
             return false;

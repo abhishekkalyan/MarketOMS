@@ -81,7 +81,13 @@ public final class SustainedLoadScenario {
         final long endNs        = startNs + (long) config.sustainedDurationS * 1_000_000_000L;
         long       iteration    = 0L;
 
+        long nextSendNs = System.nanoTime();
+
         while (System.nanoTime() < endNs) {
+            // Rate-control: pace injections to avoid overwhelming the cluster
+            nextSendNs += config.sendIntervalNs;
+            PerfOrderInjector.awaitNextSend(nextSendNs);
+
             final int symbolIdx = (int) (iteration % NUM_SYMBOLS);
             final int decision  = rng.nextInt(100);
 
@@ -109,16 +115,16 @@ public final class SustainedLoadScenario {
             // Poll egress every 10 iterations
             if (iteration % 10 == 0) {
                 symListener.poll(cluster);
+                listener.poll(cluster);
             }
             iteration++;
         }
 
-        // Drain
+        // Drain — use a generous 10s timeout to absorb backlogged responses
         log.info("  Draining {} outstanding...", listener.outstanding());
-        final long drainDeadline = System.currentTimeMillis() + config.throughputTimeoutMs;
+        final long drainDeadline = System.currentTimeMillis() + 10_000L;
         while (listener.outstanding() > 0 && System.currentTimeMillis() < drainDeadline) {
             listener.poll(cluster);
-            symListener.poll(cluster);
             Thread.onSpinWait();
         }
 

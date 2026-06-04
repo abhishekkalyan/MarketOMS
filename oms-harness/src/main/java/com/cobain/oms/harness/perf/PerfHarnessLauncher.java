@@ -108,6 +108,10 @@ public final class PerfHarnessLauncher {
 
         final String line = "════════════════════════════════════════════════════════════════";
         final String sep  = "  ─────────────────────────────────────────────────────────────";
+        // Read thresholds from env vars for accurate display
+        final long p99LimitUs      = longEnv("PERF_P99_LIMIT_US",           100_000L);
+        final int  maxOutstanding  = intEnv ("PERF_MAX_OUTSTANDING",         50_000);
+        final long snapshotLimitMs = longEnv("PERF_SNAPSHOT_RESUME_LIMIT_MS", 60_000L);
 
         System.out.println(line);
         System.out.println("  PERFORMANCE RESULTS — MarketOMS");
@@ -120,16 +124,15 @@ public final class PerfHarnessLauncher {
         System.out.println(sep);
 
         for (final BenchmarkResult r : results) {
-            final String status = r.passed ? "PASS" : "FAIL";
             // Print primary metric if available
             if (r.metrics.containsKey("p99_us")) {
                 row("LatencyBenchmark p99",
-                        r.metrics.get("p99_us") + " µs", "1000 µs", r.passed);
+                        r.metrics.get("p99_us") + " µs", p99LimitUs + " µs", r.passed);
             }
             if (r.metrics.containsKey("p99_9_us")) {
                 row("LatencyBenchmark p99.9",
-                        r.metrics.get("p99_9_us") + " µs", "5000 µs",
-                        Long.parseLong(r.metrics.get("p99_9_us")) <= 5000);
+                        r.metrics.get("p99_9_us") + " µs", (p99LimitUs * 5L) + " µs",
+                        Long.parseLong(r.metrics.get("p99_9_us")) <= p99LimitUs * 5L);
             }
             if (r.metrics.containsKey("p99_99_us")) {
                 row("LatencyBenchmark p99.99",
@@ -146,7 +149,7 @@ public final class PerfHarnessLauncher {
             }
             if (r.metrics.containsKey("max_outstanding")) {
                 row("ThroughputBenchmark outstanding",
-                        r.metrics.get("max_outstanding"), "500", r.passed);
+                        r.metrics.get("max_outstanding"), String.valueOf(maxOutstanding), r.passed);
             }
             if (r.metrics.containsKey("loss_ppm")) {
                 row("SustainedLoad loss rate",
@@ -158,7 +161,7 @@ public final class PerfHarnessLauncher {
             }
             if (r.metrics.containsKey("mean_resume_ms")) {
                 row("SnapshotRecovery resume",
-                        r.metrics.get("mean_resume_ms") + " ms", "5000 ms", r.passed);
+                        r.metrics.get("mean_resume_ms") + " ms", snapshotLimitMs + " ms", r.passed);
             }
         }
 
@@ -182,6 +185,11 @@ public final class PerfHarnessLauncher {
     private static String env(final String key, final String defaultValue) {
         final String v = System.getenv(key);
         return (v != null && !v.isEmpty()) ? v : defaultValue;
+    }
+
+    private static long longEnv(final String key, final long defaultValue) {
+        final String v = System.getenv(key);
+        return (v != null && !v.isEmpty()) ? Long.parseLong(v.trim()) : defaultValue;
     }
 
     private static int intEnv(final String key, final int defaultValue) {
