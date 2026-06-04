@@ -51,3 +51,7 @@
 | OmsConfig | Immutable value object holding all capacity and tuning values; validated and logged at startup by `OmsConfig.load(ConfigSource)` | `oms-config` module |
 | ConfigSource | Pluggable interface for raw string value resolution (`EnvVarConfigSource`, `PropertiesFileConfigSource`, `ChainedConfigSource`) | `oms-config` module |
 | OMS_CONFIG_FILE | Optional env var: path to a `.properties` file; when set, file values take priority over OS env vars via `ChainedConfigSource` | `OmsNode.loadOmsConfig()`, `OmsLauncher.loadOmsConfig()` |
+| PerfConfig | Immutable, validated snapshot of all `PERF_*` performance-harness configuration; mirrors OmsConfig pattern; lives in `oms-harness`, never depends on `oms-config` | `com.cobain.oms.harness.perf.PerfConfig` |
+| LatencyHistogram | Zero-allocation `long[]`-backed histogram for nanosecond latency recording; `record()` is allocation-free; `print()` allocates for formatting only | `com.cobain.oms.harness.perf.LatencyHistogram` |
+| PerfHarnessLauncher | Entry point for the performance test harness; runs all six benchmarks in sequence and prints the consolidated results table | `com.cobain.oms.harness.perf.PerfHarnessLauncher` |
+| PERF_SAMPLE_COUNT | Env var: number of orders to send in the latency measurement phase; default 100 000 | `PerfConfig.DEFAULT_SAMPLE_COUNT` |

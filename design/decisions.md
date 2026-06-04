@@ -124,3 +124,27 @@ env vars or `OmsConfig` directly.
 
 **Reversing:** Removing `oms-config` requires reinstating the per-entry-point `intEnv`/
 `longEnv` helpers and losing startup validation and source-name logging.
+
+---
+
+## Decision 14 — `LatencyHistogram` implementation (custom `long[]` vs HdrHistogram)
+
+**Context:** The performance harness (`oms-harness/perf`) requires a zero-allocation histogram
+for recording round-trip latency at the `record()` call site. Two candidates were evaluated:
+HdrHistogram (external jar, `org.HdrHistogram`) and a custom `long[]`-backed histogram.
+
+**Decision:** Custom `long[]` histogram (`LatencyHistogram` in `com.cobain.oms.harness.perf`).
+- 100 000 buckets × 1 µs each (covers 0–100 ms range)
+- `record(long)` is one array-index write — provably zero-allocation
+- `percentile(double)` is a primitive-array scan — zero-allocation
+- No external dependency added to `oms-harness/build.gradle`
+
+**Alternatives rejected:**
+- HdrHistogram: `Histogram.recordValue()` is also zero-allocation for pre-allocated instances,
+  but adds an external dependency (`org.hdrhistogram:HdrHistogram`) that must be vetted and
+  version-pinned. Custom histogram eliminates the dependency management cost.
+
+**Consequence of reversing:** Replacing with HdrHistogram requires adding `org.hdrhistogram:HdrHistogram`
+to `oms-harness/build.gradle` and re-running the module boundary check
+`./gradlew :oms-harness:dependencies --configuration compileClasspath | grep -E "oms-core|algo-sor"`
+to confirm HdrHistogram does not pull in a conflicting transitive dependency.
