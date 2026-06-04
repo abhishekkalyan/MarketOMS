@@ -163,5 +163,8 @@ echo "  Press Ctrl-C to stop."
 echo "================================================================"
 echo ""
 
-# Block until a child exits or the user interrupts
-wait -n "${OMS_NODE_PID}" "${OMS_LAUNCHER_PID}" 2>/dev/null || true
+# Block until a child exits or the user interrupts.
+# 'wait -n' requires bash 4.3+; macOS ships bash 3.2, so poll instead.
+while kill -0 "${OMS_NODE_PID}" 2>/dev/null && kill -0 "${OMS_LAUNCHER_PID}" 2>/dev/null; do
+    sleep 2
+done
