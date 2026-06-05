@@ -3,6 +3,8 @@ package com.cobain.oms.algo;
 import com.cobain.oms.codec.ChildOrderIntentFlyweight;
 import com.cobain.oms.model.OrderFlyweight;
 import org.agrona.collections.Long2LongHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Time-Weighted Average Price (TWAP) algorithm execution engine.
@@ -27,24 +29,28 @@ import org.agrona.collections.Long2LongHashMap;
  */
 public final class TwapAlgoEngine implements AlgoExecutionEngine {
 
-    private static final int  MAX_TWAP_ORDERS    = 512;
+    private static final Logger log = LoggerFactory.getLogger(TwapAlgoEngine.class);
+
+    public static final int   MAX_TWAP_ORDERS    = 512;
     private static final long FREE_HANDLE        = Long.MIN_VALUE;
     private static final int  DEFAULT_SLICES     = 12;
     private static final long DEFAULT_INTERVAL_MS = 5 * 60 * 1_000L;
 
+    private final int maxTwapOrders;
+
     // ── Per-handle state arrays — indexed by handle ───────────────────────────
-    private final long[] parentOrderId   = new long[MAX_TWAP_ORDERS];
-    private final long[] parentClOrdId   = new long[MAX_TWAP_ORDERS];
-    private final long[] parentPrice     = new long[MAX_TWAP_ORDERS];
-    private final int[]  parentVenueId   = new int[MAX_TWAP_ORDERS];
-    private final long[] sliceQty        = new long[MAX_TWAP_ORDERS];
-    private final int[]  totalSlices     = new int[MAX_TWAP_ORDERS];
-    private final int[]  slicesFired     = new int[MAX_TWAP_ORDERS];
-    private final long[] sliceIntervalMs = new long[MAX_TWAP_ORDERS];
-    private final boolean[] handleActive = new boolean[MAX_TWAP_ORDERS];
+    private final long[]    parentOrderId;
+    private final long[]    parentClOrdId;
+    private final long[]    parentPrice;
+    private final int[]     parentVenueId;
+    private final long[]    sliceQty;
+    private final int[]     totalSlices;
+    private final int[]     slicesFired;
+    private final long[]    sliceIntervalMs;
+    private final boolean[] handleActive;
 
     // ── Free-handle stack (O(1) alloc/free) ───────────────────────────────────
-    private final int[] freeHandles = new int[MAX_TWAP_ORDERS];
+    private final int[] freeHandles;
     private int         freeHandleTop;
 
     // ── Pre-allocated intent + stored sink ────────────────────────────────────
@@ -56,12 +62,27 @@ public final class TwapAlgoEngine implements AlgoExecutionEngine {
      */
     private ChildIntentSink storedSink;
 
-    public TwapAlgoEngine() {
-        this.intent = ChildOrderIntentFlyweight.allocate();
-        freeHandleTop = MAX_TWAP_ORDERS;
-        for (int i = 0; i < MAX_TWAP_ORDERS; i++) {
+    public TwapAlgoEngine(final int maxTwapOrders) {
+        this.maxTwapOrders   = maxTwapOrders;
+        this.parentOrderId   = new long[maxTwapOrders];
+        this.parentClOrdId   = new long[maxTwapOrders];
+        this.parentPrice     = new long[maxTwapOrders];
+        this.parentVenueId   = new int[maxTwapOrders];
+        this.sliceQty        = new long[maxTwapOrders];
+        this.totalSlices     = new int[maxTwapOrders];
+        this.slicesFired     = new int[maxTwapOrders];
+        this.sliceIntervalMs = new long[maxTwapOrders];
+        this.handleActive    = new boolean[maxTwapOrders];
+        this.freeHandles     = new int[maxTwapOrders];
+        this.intent          = ChildOrderIntentFlyweight.allocate();
+        freeHandleTop = maxTwapOrders;
+        for (int i = 0; i < maxTwapOrders; i++) {
             freeHandles[i] = i;
         }
+    }
+
+    public TwapAlgoEngine() {
+        this(MAX_TWAP_ORDERS);
     }
 
     // ── AlgoExecutionEngine interface ─────────────────────────────────────────
@@ -76,7 +97,8 @@ public final class TwapAlgoEngine implements AlgoExecutionEngine {
 
         final int handle = acquireHandle();
         if (handle < 0) {
-            // TWAP capacity exceeded — dispatch entire qty as a single slice
+            log.warn("TWAP capacity exhausted (maxTwapOrders={}): orderId={} dispatched as single slice",
+                     maxTwapOrders, parent.orderId());
             dispatchSlice(parent.orderId(), parent.clOrdId(), parent.price(),
                           parent.venueId() > 0 ? parent.venueId() : 1,
                           parent.leavesQty(), (byte) 0, sink, nowNanos);
@@ -118,7 +140,7 @@ public final class TwapAlgoEngine implements AlgoExecutionEngine {
         final int handle  = (int) (correlationId >>> 32);
         final int sliceNo = (int) (correlationId & 0xFFFFFFFFL);
 
-        if (handle < 0 || handle >= MAX_TWAP_ORDERS || !handleActive[handle]) {
+        if (handle < 0 || handle >= maxTwapOrders || !handleActive[handle]) {
             return;
         }
         if (slicesFired[handle] != sliceNo) {
@@ -147,8 +169,8 @@ public final class TwapAlgoEngine implements AlgoExecutionEngine {
     public void reset() {
         java.util.Arrays.fill(handleActive, false);
         java.util.Arrays.fill(slicesFired, 0);
-        freeHandleTop = MAX_TWAP_ORDERS;
-        for (int i = 0; i < MAX_TWAP_ORDERS; i++) {
+        freeHandleTop = maxTwapOrders;
+        for (int i = 0; i < maxTwapOrders; i++) {
             freeHandles[i] = i;
         }
         storedSink = null;
