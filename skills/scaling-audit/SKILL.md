@@ -1,18 +1,3 @@
----
-name: scaling-audit-skill
-description: >
-  Run a full scaling and resilience audit on the MarketOMS codebase.
-  Discovers every hard-coded capacity limit, fixed-size pre-allocation,
-  tuning constant, and resilience gap by scanning the live source — no
-  pre-seeded findings. Proposes and implements remediations that respect
-  the zero-GC hot path and Raft replication invariants; bumps the snapshot
-  version if any serialised layout changes; updates all design docs; runs
-  tests; and merges to master.
-  Trigger for any question about: scaling, capacity ceilings, hard-coded
-  sizes, throughput walls, data loss on failover, snapshot gaps, SPOF,
-  recovery correctness, or making any limit configurable.
----
-
 # Scaling and Resilience Audit Skill
 
 ## Purpose

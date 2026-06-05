@@ -1,12 +1,3 @@
----
-name: scaling-audit-ARCHIVED
-description: >
-  ARCHIVED — do not load. Superseded by skills/scaling-audit/SKILL.md.
-  This file is kept for historical reference only. It contains
-  pre-seeded findings that are already resolved in the codebase.
-  Loading it will produce stale, already-closed findings.
----
-
 > **ARCHIVED — DO NOT LOAD.**
 > Superseded by `../SKILL.md` (self-scanning version, 2026-06).
 > Pre-seeded findings F1–F10 are already resolved. Loading this
