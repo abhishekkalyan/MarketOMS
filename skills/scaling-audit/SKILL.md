@@ -1,5 +1,5 @@
 ---
-name: scaling-audit
+name: scaling-audit-skill
 description: >
   Run a full scaling and resilience audit on the MarketOMS codebase.
   Discovers every hard-coded capacity limit, fixed-size pre-allocation,
