@@ -329,12 +329,11 @@ Omitting `jdk.internal.misc` causes `IllegalAccessError` from `UnsafeApi` at sta
 
 ## Skills
 
-All reusable agent workflows live in `skills/` at the repo root.
-Load the relevant SKILL.md before starting any matching task.
-
-| Task keywords | Skill to load |
-|---|---|
-| scaling, capacity, hard-coded limit, throughput wall, configurable constant, snapshot gap, resilience, SPOF, data loss, recovery, failover audit | `skills/scaling-audit/SKILL.md` |
+When asked about scaling, capacity, hard-coded limits, throughput walls,
+configurable constants, snapshot gaps, resilience, SPOF, data loss,
+recovery, or failover — read the file
+`skills/scaling-audit/SKILL.md` in full and follow the workflow it
+describes from Step 0 through Phase 4.
 
 
 ---
