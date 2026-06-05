@@ -15,6 +15,7 @@ export OMS_SYMBOLS="${OMS_SYMBOLS:-AAPL,MSFT,GOOG,AMZN}"
 # Single-node local cluster: only node 0, all ports on localhost.
 # Format: nodeId,hostname:clientPort:memberPort:logPort:transferPort:archivePort
 export OMS_CLUSTER_MEMBERS="${OMS_CLUSTER_MEMBERS:-0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010}"
+export OMS_ARCHIVE_DELETE_ON_START="${OMS_ARCHIVE_DELETE_ON_START:-true}"
 
 echo "================================================================"
 echo "  OMS Node ${OMS_NODE_ID}"
@@ -31,6 +32,6 @@ mkdir -p "${OMS_AERON_DIR}" "${OMS_ARCHIVE_DIR}"
 cd "${SCRIPT_DIR}"
 
 # Build a fat jar first, then run directly via java so env vars are visible.
-./gradlew :oms-core:installDist --quiet
+./gradlew :oms-core:installDist --quiet --no-daemon
 
 exec oms-core/build/install/oms-core/bin/oms-core

@@ -112,7 +112,7 @@ trap cleanup EXIT INT TERM
 
 # ── 1. Build ───────────────────────────────────────────────────────────────────
 echo "Building all modules..."
-./gradlew :oms-core:installDist :oms-launcher:installDist :oms-harness:installDist --quiet
+./gradlew :oms-core:installDist :oms-launcher:installDist :oms-harness:installDist --quiet --no-daemon
 echo "Build OK."
 
 # ── 2. Clean Aeron dirs ────────────────────────────────────────────────────────
@@ -164,8 +164,19 @@ OMS_AERON_DIR="${LAUNCHER_AERON_DIR}" \
 OMS_LAUNCHER_PID=$!
 echo "  AlgoSorAgent PID: ${OMS_LAUNCHER_PID}"
 
-# Give the AlgoSorAgent a moment to connect before injecting orders
-sleep 3
+# Wait until AlgoSorAgent's AgentRunner is confirmed started before injecting orders
+echo -n "  Waiting for AlgoSorAgent"
+WAITED=0
+until grep -q "AlgoSorAgent started on dedicated thread" "${LAUNCHER_LOG}" 2>/dev/null; do
+    sleep 1; WAITED=$((WAITED + 1)); echo -n "."
+    if [[ ${WAITED} -ge 30 ]]; then
+        echo ""; echo "ERROR: AlgoSorAgent did not start in 30s. See ${LAUNCHER_LOG}"; tail -20 "${LAUNCHER_LOG}"; exit 1
+    fi
+    if ! kill -0 "${OMS_LAUNCHER_PID}" 2>/dev/null; then
+        echo ""; echo "ERROR: AlgoSorAgent exited. See ${LAUNCHER_LOG}"; tail -20 "${LAUNCHER_LOG}"; exit 1
+    fi
+done
+echo " ready."
 
 # ── 6. Run the test harness ───────────────────────────────────────────────────
 echo ""

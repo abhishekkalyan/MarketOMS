@@ -19,6 +19,6 @@ rm -rf "${OMS_AERON_DIR}"
 mkdir -p "${OMS_AERON_DIR}"
 
 cd "${SCRIPT_DIR}"
-./gradlew :oms-launcher:installDist --quiet
+./gradlew :oms-launcher:installDist --quiet --no-daemon
 
 exec oms-launcher/build/install/oms-launcher/bin/oms-launcher

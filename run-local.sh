@@ -24,6 +24,7 @@ export OMS_LAUNCHER_AERON_DIR="/tmp/oms-aeron-launcher"
 export OMS_MAX_NOTIONAL=10000000
 export OMS_SYMBOLS="AAPL,MSFT,GOOG,AMZN"
 export OMS_CLUSTER_MEMBERS="0,localhost:9000,localhost:9001,localhost:9002,localhost:9003,localhost:8010"
+export OMS_ARCHIVE_DELETE_ON_START=true
 
 NODE_LOG="/tmp/oms-node.log"
 LAUNCHER_LOG="/tmp/oms-launcher.log"
@@ -110,7 +111,7 @@ trap cleanup EXIT INT TERM
 
 # ── 1. Build ───────────────────────────────────────────────────────────────────
 echo "Building all modules..."
-./gradlew :oms-core:installDist :oms-launcher:installDist --quiet
+./gradlew :oms-core:installDist :oms-launcher:installDist --quiet --no-daemon
 echo "Build OK."
 
 # ── 2. Clean stale Aeron dirs ─────────────────────────────────────────────────
