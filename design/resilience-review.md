@@ -167,3 +167,13 @@ wiping the archive first.
 | S9 | `SnapshotManager` buffer allocated at runtime from `maxOrders + maxChildren`; no static `MAX_SNAPSHOT_BYTES` | SATISFIED |
 | S10 | Snapshot version 3 header embeds `snapshotMaxOrders` + `snapshotMaxChildren`; restore rejects incompatible downsizes | SATISFIED |
 | S11 | `ValidationEngine.seenClOrdIds` pre-sized to `maxOrders × 2` at load factor 0.65 — no rehash allocations on hot path | SATISFIED |
+
+## Satisfied Invariants (added by scaling-audit-2026-06-05)
+
+| ID | Finding | Status |
+|----|---------|--------|
+| S12 | `OrderBook.clOrdIdToSlot` and `orderIdToSlot` pre-sized to `maxOrders × 2` at 0.65f — no hot-path rehash in `allocateSlot()` / `index()` | SATISFIED |
+| S13 | `ChildOrderRegistry.orderIdToSlot` and `clOrdIdToOrderId` pre-sized to `capacity × 2` at 0.65f — no hot-path rehash in `createChild()` | SATISFIED |
+| S14 | `IcebergAlgoEngine.remainingQty` and `peakQty` pre-sized to `maxConcurrent × 2` at 0.65f — no hot-path rehash in `onSlice()`; wired via `OMS_MAX_ICEBERG_ORDERS` (default 4_096) | SATISFIED |
+| S15 | `TwapAlgoEngine` all per-handle arrays sized at runtime from `OMS_MAX_TWAP_ORDERS` (default 512); capacity fallback logs WARN — no silent degradation | SATISFIED |
+| S16 | `IcebergAlgoEngine.onSlice()` guards against sliceIndex byte wrap-around with `MAX_SLICES_PER_PARENT = 256` — clOrdId collisions in `ChildOrderRegistry` are prevented | SATISFIED |

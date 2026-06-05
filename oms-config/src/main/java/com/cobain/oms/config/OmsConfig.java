@@ -36,6 +36,8 @@ public final class OmsConfig {
     public static final String KEY_MAX_VENUES             = "OMS_MAX_VENUES";
     public static final String KEY_MAX_NOTIONAL           = "OMS_MAX_NOTIONAL";
     public static final String KEY_SYMBOLS                = "OMS_SYMBOLS";
+    public static final String KEY_MAX_ICEBERG_ORDERS     = "OMS_MAX_ICEBERG_ORDERS";
+    public static final String KEY_MAX_TWAP_ORDERS        = "OMS_MAX_TWAP_ORDERS";
     /** Optional path to a {@code .properties} config file. Read by entry points, not by this class. */
     public static final String KEY_CONFIG_FILE            = "OMS_CONFIG_FILE";
 
@@ -47,6 +49,8 @@ public final class OmsConfig {
     public static final int    DEFAULT_MAX_VENUES             = 10;
     public static final long   DEFAULT_MAX_NOTIONAL           = 10_000_000L;
     public static final String DEFAULT_SYMBOLS                = "AAPL,MSFT,GOOG,AMZN";
+    public static final int    DEFAULT_MAX_ICEBERG_ORDERS     = 4_096;
+    public static final int    DEFAULT_MAX_TWAP_ORDERS        = 512;
 
     // ── Fields ───────────────────────────────────────────────────────────────
     /** Maximum parent orders held in {@code OrderBook} (off-heap pre-allocation). */
@@ -76,6 +80,18 @@ public final class OmsConfig {
     /** Comma-separated permitted symbol whitelist (e.g. {@code "AAPL,MSFT,GOOG,AMZN"}). */
     public final String symbols;
 
+    /**
+     * Maximum concurrently tracked iceberg orders in {@code IcebergAlgoEngine}.
+     * Maps are pre-sized to this value; exceeding it triggers rehash allocations.
+     */
+    public final int maxIcebergOrders;
+
+    /**
+     * Maximum concurrently tracked TWAP orders in {@code TwapAlgoEngine}.
+     * All per-handle arrays are pre-allocated at this size.
+     */
+    public final int maxTwapOrders;
+
     // ── Private constructor — use load() ────────────────────────────────────
 
     private OmsConfig(
@@ -85,7 +101,9 @@ public final class OmsConfig {
             final int    algoFragmentLimit,
             final int    maxVenues,
             final long   maxNotional,
-            final String symbols) {
+            final String symbols,
+            final int    maxIcebergOrders,
+            final int    maxTwapOrders) {
         this.maxOrders            = maxOrders;
         this.maxChildren          = maxChildren;
         this.intentFragmentLimit  = intentFragmentLimit;
@@ -93,6 +111,8 @@ public final class OmsConfig {
         this.maxVenues            = maxVenues;
         this.maxNotional          = maxNotional;
         this.symbols              = symbols;
+        this.maxIcebergOrders     = maxIcebergOrders;
+        this.maxTwapOrders        = maxTwapOrders;
     }
 
     // ── Factory ──────────────────────────────────────────────────────────────
@@ -123,9 +143,11 @@ public final class OmsConfig {
         final int    maxVenues            = resolveInt(source,  KEY_MAX_VENUES,             DEFAULT_MAX_VENUES,            1, Integer.MAX_VALUE, log);
         final long   maxNotional          = resolveLong(source, KEY_MAX_NOTIONAL,           DEFAULT_MAX_NOTIONAL,          1L, Long.MAX_VALUE,    log);
         final String symbols              = resolveString(source, KEY_SYMBOLS,              DEFAULT_SYMBOLS,               log);
+        final int    maxIcebergOrders     = resolveInt(source,  KEY_MAX_ICEBERG_ORDERS,     DEFAULT_MAX_ICEBERG_ORDERS,    1, Integer.MAX_VALUE, log);
+        final int    maxTwapOrders        = resolveInt(source,  KEY_MAX_TWAP_ORDERS,        DEFAULT_MAX_TWAP_ORDERS,       1, Integer.MAX_VALUE, log);
 
         return new OmsConfig(maxOrders, maxChildren, intentFragmentLimit,
-                algoFragmentLimit, maxVenues, maxNotional, symbols);
+                algoFragmentLimit, maxVenues, maxNotional, symbols, maxIcebergOrders, maxTwapOrders);
     }
 
     // ── Resolution helpers ───────────────────────────────────────────────────
@@ -223,6 +245,8 @@ public final class OmsConfig {
                 ", maxVenues=" + maxVenues +
                 ", maxNotional=" + maxNotional +
                 ", symbols='" + symbols + '\'' +
+                ", maxIcebergOrders=" + maxIcebergOrders +
+                ", maxTwapOrders=" + maxTwapOrders +
                 '}';
     }
 }

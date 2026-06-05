@@ -57,8 +57,8 @@ public final class ChildOrderRegistry {
     public ChildOrderRegistry(final int capacity) {
         this.capacity         = capacity;
         this.store            = new UnsafeBuffer(new byte[capacity * OrderLayout.BLOCK_LENGTH]);
-        this.orderIdToSlot    = new Long2LongHashMap(MISSING);
-        this.clOrdIdToOrderId = new Long2LongHashMap(MISSING);
+        this.orderIdToSlot    = new Long2LongHashMap(capacity * 2, 0.65f, MISSING);
+        this.clOrdIdToOrderId = new Long2LongHashMap(capacity * 2, 0.65f, MISSING);
         this.freeSlots        = new int[capacity];
         this.freeTop          = capacity;
         for (int i = 0; i < capacity; i++) {

@@ -4,6 +4,8 @@ import com.cobain.oms.codec.ChildOrderIntentFlyweight;
 import com.cobain.oms.model.OrderFlyweight;
 import org.agrona.collections.Long2LongHashMap;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Iceberg (Reserve) algorithm execution engine.
@@ -24,7 +26,10 @@ import org.agrona.concurrent.UnsafeBuffer;
  */
 public final class IcebergAlgoEngine implements AlgoExecutionEngine {
 
-    private static final long MISSING = Long.MIN_VALUE;
+    private static final Logger log     = LoggerFactory.getLogger(IcebergAlgoEngine.class);
+    private static final long   MISSING = Long.MIN_VALUE;
+    /** clOrdId formula: parentOrderId * 10_000L + (sliceIndex & 0xFF) → max 256 unique children per parent. */
+    static final int MAX_SLICES_PER_PARENT = 256;
 
     /** Denominator for automatic peak sizing: display 1/peakFraction of total qty. */
     private final long peakFraction;
@@ -42,8 +47,8 @@ public final class IcebergAlgoEngine implements AlgoExecutionEngine {
      */
     public IcebergAlgoEngine(final long peakFraction, final int maxConcurrent) {
         this.peakFraction = peakFraction;
-        this.remainingQty = new Long2LongHashMap(MISSING);
-        this.peakQty      = new Long2LongHashMap(MISSING);
+        this.remainingQty = new Long2LongHashMap(maxConcurrent * 2, 0.65f, MISSING);
+        this.peakQty      = new Long2LongHashMap(maxConcurrent * 2, 0.65f, MISSING);
         this.intent       = ChildOrderIntentFlyweight.allocate();
     }
 
@@ -75,6 +80,11 @@ public final class IcebergAlgoEngine implements AlgoExecutionEngine {
         int dispatched = 0;
         byte sliceIndex = 0;
         while (remaining > 0L) {
+            if (dispatched >= MAX_SLICES_PER_PARENT) {
+                log.warn("Iceberg slice limit reached (256) for orderId={}: {} qty remaining dropped",
+                         parentOrderId, remaining);
+                break;
+            }
             final long waveQty = Math.min(peak, remaining);
 
             intent.setParentOrderId(parentOrderId);

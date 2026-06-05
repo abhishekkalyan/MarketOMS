@@ -49,10 +49,10 @@ public final class OrderBook {
     // ── Indices — zero-GC Agrona primitive maps ────────────────────────────────
 
     /** clOrdId (FIX tag 11) → slot index. Used for duplicate detection and cancel/replace. */
-    private final Long2LongHashMap clOrdIdToSlot  = new Long2LongHashMap(EMPTY);
+    private final Long2LongHashMap clOrdIdToSlot;
 
     /** orderId (FIX tag 37) → slot index. Used when routing inbound ExecReports. */
-    private final Long2LongHashMap orderIdToSlot  = new Long2LongHashMap(EMPTY);
+    private final Long2LongHashMap orderIdToSlot;
 
     // ── Free-slot management: a simple O(1) stack ─────────────────────────────
 
@@ -72,12 +72,14 @@ public final class OrderBook {
     private final OrderFlyweight snapshotFlyweight = new OrderFlyweight();
 
     public OrderBook(final int maxOrders) {
-        this.maxOrders    = maxOrders;
-        this.backingArray = new byte[maxOrders * OrderLayout.MESSAGE_SIZE];
-        this.orderBuffer  = new UnsafeBuffer(backingArray);
-        this.freeSlots    = new int[maxOrders];
+        this.maxOrders     = maxOrders;
+        this.backingArray  = new byte[maxOrders * OrderLayout.MESSAGE_SIZE];
+        this.orderBuffer   = new UnsafeBuffer(backingArray);
+        this.freeSlots     = new int[maxOrders];
         this.slotToOrderId = new long[maxOrders];
-        this.freeTop      = maxOrders;
+        this.freeTop       = maxOrders;
+        this.clOrdIdToSlot = new Long2LongHashMap(maxOrders * 2, 0.65f, EMPTY);
+        this.orderIdToSlot = new Long2LongHashMap(maxOrders * 2, 0.65f, EMPTY);
         for (int i = 0; i < maxOrders; i++) {
             freeSlots[i] = i;
         }
