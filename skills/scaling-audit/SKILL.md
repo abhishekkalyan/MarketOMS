@@ -1,167 +1,439 @@
 ---
 name: scaling-audit
 description: >
-  Run a full scaling audit on the MarketOMS codebase: find every hard-coded
-  capacity limit, fixed-size pre-allocation, and tuning constant that creates
-  a scaling wall; propose and implement remediations that respect the zero-GC
-  hot path; bump the snapshot version if serialised layouts change; update all
-  design docs; run tests; and merge to master. Use this skill whenever the user
-  asks about scaling, capacity limits, MAX_ORDERS, hard-coded sizes, or wants
-  to make any capacity constant configurable. Also trigger for any task that
-  touches OrderBook, ChildOrderRegistry, SnapshotManager, AlgoSorAgent fragment
-  limits, or ValidationEngine map sizing.
+  Run a full scaling and resilience audit on the MarketOMS codebase.
+  Discovers every hard-coded capacity limit, fixed-size pre-allocation,
+  tuning constant, and resilience gap by scanning the live source — no
+  pre-seeded findings. Proposes and implements remediations that respect
+  the zero-GC hot path and Raft replication invariants; bumps the snapshot
+  version if any serialised layout changes; updates all design docs; runs
+  tests; and merges to master.
+  Trigger for any question about: scaling, capacity ceilings, hard-coded
+  sizes, throughput walls, data loss on failover, snapshot gaps, SPOF,
+  recovery correctness, or making any limit configurable.
 ---
 
-# Scaling Audit Skill
+# Scaling and Resilience Audit Skill
 
 ## Purpose
-End-to-end agent workflow: audit → remediate → test → document → merge.
 
-## Mandatory first step
-Before touching any code, read these design files:
-design/principles.md
-design/decisions.md
-design/resilience-review.md
-design/components-core.md
-design/components-codec.md
-design/failover.md
-design/checklist.md
+End-to-end agent workflow that discovers and remediates its own findings:
+
+```
+Read design context → Scan codebase → Classify findings → Implement fixes
+→ Test → Update docs → Merge
+```
+
+No findings are pre-seeded. The agent reads the codebase on every invocation
+and derives findings from what it actually finds.
 
 ---
 
-## Phase 1 — Audit
+## Step 0 — Read design context first (mandatory)
 
-Scan the entire codebase for hard-coded capacity limits, fixed-size
-pre-allocations, and tuning constants that create scaling walls.
+Before scanning a single source file, read every design document listed here.
+This gives the agent the invariants it must preserve and the vocabulary to
+classify findings correctly.
 
-For every finding produce a structured entry:
+```
+design/INDEX.md          — file ownership table; read first to orient
+design/principles.md     — zero-GC rules, module boundaries, hot-path methods
+design/decisions.md      — prior architectural decisions; know what is intentional
+design/resilience-review.md — all known resilience findings and their status
+design/components-core.md   — component contracts: constructors, invariants, failure modes
+design/components-codec.md  — wire-format and constant class contracts
+design/failover.md          — snapshot wire format, restore step sequence
+design/checklist.md         — gate questions; use as a cross-check for each finding
+CLAUDE.md                   — resilience principles P1–P6; engineering rules
+```
 
+**Key invariants to hold in mind while scanning (from the above):**
+
+- Zero-GC hot path: no `new` in `onSessionMessage()`, `validateNewOrder()`,
+  `validate()`, `createChild()`, `onFragment()`, `publishIntent()`
+- All pre-allocated buffers allocated once in constructor and reused
+- No `synchronized`, `AtomicReference`, or locks on any hot-path class
+- Every stateful component must be serialized in `SnapshotManager.takeSnapshot()`
+  and restored in `loadSnapshot()` (CLAUDE.md P1)
+- Snapshot version must be bumped whenever the serialised layout changes
+- `algo-sor` must never depend on `oms-core` at compile time
+- `OmsConfig` is the single source of truth for all capacity constants;
+  components receive values as constructor parameters — they never read env vars directly
+- Existing deployments with no env vars must behave identically after any change
+
+---
+
+## Phase 1 — Discover findings
+
+### 1a — Scan for scaling walls
+
+A **scaling wall** is any point in the code where a fixed number creates a
+ceiling on load that cannot be raised without a code change or redeployment.
+
+Read every `.java` file under `oms-codec/src`, `oms-core/src`, `algo-sor/src`,
+`oms-launcher/src`, and `oms-config/src`. For each file look for:
+
+**S-type: Static capacity constants**
+Any `static final int/long` that sizes a data structure, buffer, or loop bound.
+Ask: can this value be raised without a code change? If no → scaling wall.
+Specific patterns to look for:
+```
+static final int   MAX_*     =
+static final int   DEFAULT_* =
+static final int   LIMIT_*   =
+static final int   NUM_*     =   (only those used to size arrays, not enumerations)
+new byte[<literal>]
+new int[<literal>]
+ByteBuffer.allocateDirect(<literal>)
+new Long2LongHashMap(<literal>
+new LongHashSet(<literal>
+```
+
+**W-type: Wire format hard limits**
+Field widths in flyweight classes that constrain value ranges.
+Ask: what is the maximum value this field can hold, and what breaks when
+that maximum is reached?
+Specific patterns to look for — in any flyweight `getXxx()`/`setXxx()` pair:
+```
+buffer.getByte  / putByte   → range 0–127 (signed) or 0–255 (masked)
+buffer.getShort / putShort  → range 0–32767 (signed) or 0–65535 (masked)
+buffer.getInt   / putInt    → check if used as a counter or index, not an ID
+```
+For each, trace whether the value feeds a formula (e.g. clOrdId derivation),
+an index into an array, or a loop bound, and what overflows or collides first.
+
+**T-type: Topology ceilings**
+Single-process or single-shard constraints that cannot be scaled horizontally.
+Look in `OmsLauncher`, `OmsNode`, `AeronTransport` for:
+- IPC channels with no shard parameterisation
+- Stream IDs that are global rather than shard-local
+- Single `Aeron.Context` with a single `aeronDirectoryName`
+
+**C-type: Configurable constants that have lost their env-var wiring**
+Check that every field in `OmsConfig` is actually passed through to the
+component that uses it. A constant that was made configurable but whose
+wiring was dropped in a later refactor is a hidden wall.
+```bash
+# For each field in OmsConfig, verify it is passed as a constructor arg:
+grep -n "public final" oms-config/src/main/java/com/cobain/oms/config/OmsConfig.java
+# Then for each field name, verify it reaches its target constructor:
+grep -rn "<fieldName>" oms-launcher/src oms-core/src
+```
+
+---
+
+### 1b — Scan for resilience gaps
+
+A **resilience gap** is any state that can be lost on a leader failover, any
+single point of failure that halts processing, or any recovery path that is
+missing, incomplete, or incorrect.
+
+**G-type: Snapshot completeness gaps**
+Find every class that holds durable order state — state that must survive a
+leader failover. Cross-reference against what `SnapshotManager.takeSnapshot()`
+actually serializes.
+```bash
+# What does takeSnapshot() actually serialize?
+grep -n "snapshot\|putBytes\|putLong\|putInt" \
+  oms-core/src/main/java/com/cobain/oms/cluster/SnapshotManager.java
+
+# What classes hold order or dedup state (field type Long2LongHashMap, LongHashSet,
+# UnsafeBuffer used as an order store)?
+grep -rn "Long2LongHashMap\|LongHashSet\|UnsafeBuffer" \
+  oms-core/src/main/java/ oms-codec/src/main/java/
+```
+For each stateful class found: is its state fully captured in `takeSnapshot()`
+and fully restored in `loadSnapshot()`?
+
+**P-type: Post-restore correctness gaps**
+Read `OmsClusteredService.onStart()` end-to-end. Verify:
+- `ParentOrderState.registerTransitions()` is called before snapshot load
+- `recomputeNextOrderId()` scans all registries that hold order IDs
+- `republishRoutingOrders()` is called to re-hydrate algo-sor after restore
+- All subscriptions that are SPOFs have `availableImageHandler` /
+  `unavailableImageHandler` attached (CLAUDE.md P6)
+
+**D-type: Archive durability gaps**
+Check the default value of `OMS_ARCHIVE_DIR` in `OmsNode`. Is it ephemeral
+(`/tmp`, `/dev/shm`) or durable?
+
+**V-type: Version and migration gaps**
+Read `SnapshotManager.SNAPSHOT_VERSION`. Read `handleSnapshotFragment()` and
+verify it throws a clear `IllegalStateException` for mismatched versions rather
+than silently corrupting state.
+If any remediation in this session changes the snapshot wire format, the version
+must be bumped and a migration note added to `design/resilience-review.md`.
+
+---
+
+### 1c — Produce the findings table
+
+For every finding, produce one structured entry before moving to Phase 2.
+Do not proceed until the table is complete.
+
+```
 FINDING <id>
-Location    : <class>#<field or constant> (<module>)
-Value       : <current value>
-Wall        : <what breaks or fills up first, and at what load>
-Snapshot    : yes/no — does this drive MAX_SNAPSHOT_BYTES or affect
-the snapshot wire format?
-Remediation : <proposed fix in one sentence>
+Type        : S | W | T | C | G | P | D | V
+Severity    : CRITICAL | HIGH | MEDIUM | LOW
+Location    : <class>#<field, method, or constant> (<module>)
+Current     : <exact current value or behaviour>
+Wall/Gap    : <what breaks, fills, or fails and at what load or event>
+Snapshot    : YES | NO — does this affect the snapshot wire format?
+Intentional : YES | NO | UNKNOWN
+             (YES = documented in decisions.md or resilience-review.md as deferred/accepted)
+Remediation : <one-sentence proposed fix>
+```
 
-Seed list (do not stop here — find others):
+**Severity classification:**
 
-F1  OrderBook.MAX_ORDERS = 65_536
-F2  ChildOrderRegistry.DEFAULT_CAPACITY = 32_768
-F3  SnapshotManager.MAX_SNAPSHOT_BYTES  (derived from F1 + F2)
-F4  AlgoSorAgent.FRAGMENT_LIMIT = 10
-F5  OmsClusteredService.INTENT_FRAGMENT_LIMIT = 20
-F6  SmartOrderRouter.MAX_VENUES = 10
-F7  ValidationEngine.seenClOrdIds Long2LongHashMap initial capacity
-F8  ParentOrderState.TRANSITION_TABLE dimensions (NUM_STATES, NUM_EVENTS)
-F9  Hard-coded stream IDs in AeronTransport / OmsLauncher
-F10 Hard-coded byte array sizes for egress/ingress buffers in
-OmsClusteredService (algoOutbound, egressBuffer — 129 bytes)
+| Severity | Meaning |
+|----------|---------|
+| CRITICAL | Silent data loss on failover, or unrecoverable crash under normal load |
+| HIGH     | Scaling wall reachable under expected peak load; or SPOF with no detection |
+| MEDIUM   | Wall reachable only at 10× expected load; or gap with partial mitigation |
+| LOW      | Inconsistency, tech debt, or documented deferral that should be reviewed |
 
-Present the full findings table before proceeding to Phase 2.
+**Before classifying a finding as open**, check:
+1. Is it listed in `design/resilience-review.md` with status FIXED or SATISFIED? → skip
+2. Is it documented in `design/decisions.md` as an intentional trade-off? → mark `Intentional: YES`
+3. Is it controlled by an `OmsConfig` field that is correctly wired? → skip
 
----
-
-## Phase 2 — Implement
-
-Apply remediations in dependency order. After each logical unit:
-(a) run ./gradlew test
-(b) fix any failures before proceeding
-(c) make a focused git commit with the message shown below
-
-### R1 — OrderBook capacity configurable  (F1, F3)
-- Add OrderBook(int maxOrders) constructor; no-arg delegates to it
-- env var: OMS_MAX_ORDERS  default: 65536
-- Read in OmsLauncher / OmsNode; pass to OrderBook and SnapshotManager
-- SnapshotManager accepts maxOrders + maxChildren; allocates buffer at runtime
-- Zero-GC: UnsafeBuffer still allocated once in constructor
-  Commit: "feat(order-book): make MAX_ORDERS configurable via OMS_MAX_ORDERS"
-
-### R2 — ChildOrderRegistry capacity configurable  (F2, F3)
-- env var: OMS_MAX_CHILDREN  default: 32768
-  Commit: "feat(child-registry): make DEFAULT_CAPACITY configurable via OMS_MAX_CHILDREN"
-
-### R3 — Bump snapshot version to 3  (F3)
-- SNAPSHOT_VERSION = 3
-- Extend header to 24 bytes; add snapshotMaxOrders + snapshotMaxChildren at [16] and [20]
-- takeSnapshot() writes both values; handleSnapshotFragment() reads them
-- Add migration note to design/resilience-review.md
-  Commit: "feat(snapshot): bump to version 3; embed capacity metadata in header"
-
-### R4 — AlgoSorAgent.FRAGMENT_LIMIT configurable  (F4)
-- env var: OMS_ALGO_FRAGMENT_LIMIT  default: 10
-  Commit: "feat(algo-sor): make FRAGMENT_LIMIT configurable via OMS_ALGO_FRAGMENT_LIMIT"
-
-### R5 — INTENT_FRAGMENT_LIMIT configurable  (F5)
-- env var: OMS_INTENT_FRAGMENT_LIMIT  default: 20
-  Commit: "feat(oms-core): make INTENT_FRAGMENT_LIMIT configurable via OMS_INTENT_FRAGMENT_LIMIT"
-
-### R6 — SmartOrderRouter.MAX_VENUES configurable  (F6)
-- env var: OMS_MAX_VENUES  default: 10
-- Venue arrays still pre-allocated once in constructor
-  Commit: "feat(algo-sor): make MAX_VENUES configurable via OMS_MAX_VENUES"
-
-### R7 — ValidationEngine seenClOrdIds sized from maxOrders  (F7)
-- Constructor parameter; initial capacity = maxOrders * 2, load factor 0.65
-  Commit: "feat(validation): size seenClOrdIds initial capacity from maxOrders"
-
-### R8 — Verify constants; replace any remaining literals  (F8, F9, F10)
-- Confirm TRANSITION_TABLE uses NUM_STATES / NUM_EVENTS, not literals
-- Confirm stream IDs are named constants in AeronTransport
-- Confirm buffer sizes use ClusterMessageType.IPC_MESSAGE_SIZE
-- Replace any literals found; document sharding note in design/decisions.md
-  Commit: "refactor(constants): replace any remaining literal sizes with named constants"
+**Only open findings** (not FIXED, not intentionally accepted) proceed to Phase 2.
 
 ---
 
-## Hard constraints (never violate)
+## Phase 2 — Implement remediations
 
-• No `new` expressions in onSessionMessage(), validateNewOrder(), validate(),
-createChild(), onFragment(), publishIntent()
+Process open findings in dependency order. A finding that affects the snapshot
+wire format must be grouped with its `SNAPSHOT_VERSION` bump into a single
+atomic commit.
+
+**For each finding (or logically related group of findings):**
+
+1. Read the component contract in `design/components-core.md` or
+   `design/components-codec.md` before changing anything.
+2. Apply the remediation.
+3. Run `./gradlew test` — must be green before committing.
+4. Commit with the conventional format:
+
+```
+<type>(<scope>): <description>
+
+Body: technical context only — what changed and why.
+```
+
+**Remediation patterns by finding type:**
+
+**S-type (static capacity constant):**
+- Add a parameterised constructor; no-arg delegates to the existing default constant
+- Add env var `OMS_<NAME>` to `OmsConfig` (`KEY_*` constant, `DEFAULT_*` constant, field)
+- Add to `oms-node.properties.example` with a comment
+- Wire through entry points (`OmsNode.loadOmsConfig()`, `OmsLauncher.loadOmsConfig()`)
+  passing to the component as a constructor argument — the component never reads the
+  env var directly
+- Pre-allocate all arrays in the constructor at the new runtime size
+- Zero-GC: no allocation on the hot path as a result of the change
+
+**W-type (wire format field width):**
+- Widen the field in the flyweight (e.g. `byte` → `short`), consuming adjacent
+  padding bytes if available to avoid changing `BLOCK_LENGTH`
+- Update the formula or index that consumes the field value
+- If `BLOCK_LENGTH` changes or any snapshot-stored value changes:
+  bump `SNAPSHOT_VERSION` and update the snapshot format table in
+  `design/failover.md` and `design/resilience-review.md`
+- Update `design/decisions.md` if the change affects a documented formula
+
+**T-type (topology ceiling):**
+- Add `OMS_SHARD_ID` (default 0) and `OMS_SHARD_COUNT` (default 1) to `OmsConfig`
+- Pass to `AeronTransport`; assert `shard_id < shard_count` at startup
+- When `shard_count == 1` behaviour must be identical to before
+- Do not implement full sharding in a single audit pass; wire stubs and document
+  the remaining work in `design/decisions.md`
+
+**C-type (broken env-var wiring):**
+- Trace the field from `OmsConfig` through entry-point → constructor injection
+- Re-connect the broken link; add a test asserting the non-default value is
+  actually used by the component
+
+**G-type (snapshot gap):**
+- Add `snapshot()` and `restore()` methods to the affected class if absent
+- Add the call to `SnapshotManager.takeSnapshot()` and `loadSnapshot()`
+- Bump `SNAPSHOT_VERSION`
+- Add a satisfied invariant to `design/resilience-review.md`
+
+**P-type (post-restore gap):**
+- Add the missing step to `OmsClusteredService.onStart()`
+- Add or extend the missing image handler
+- Update `design/components-core.md` `OmsClusteredService` contract
+- Add a satisfied invariant to `design/resilience-review.md`
+
+**D-type (archive durability):**
+- Change the default to a durable path; document the production override
+  requirement in `design/resilience-review.md`
+
+**V-type (version/migration gap):**
+- Ensure `handleSnapshotFragment()` throws `IllegalStateException` with a
+  clear message including the wipe instruction on version mismatch
+- Add a migration note to `design/resilience-review.md`
+
+---
+
+### Hard constraints — never violate regardless of finding type
+
+```
+• No `new` in onSessionMessage(), validateNewOrder(), validate(),
+  createChild(), onFragment(), publishIntent()
 • No synchronized, AtomicReference, or locks on any hot-path class
-• All pre-allocated buffers allocated once in constructor, reused every message
+• All pre-allocated buffers allocated once in constructor; reused every message
 • Existing deployments with no env vars must behave identically to today
 • Snapshot version must be bumped if any serialised layout changes
+• algo-sor must never gain a compile-time dependency on oms-core
+• Components never read OmsConfig or env vars directly — values injected
+  as constructor args by OmsNode / OmsLauncher
 • ./gradlew test must be green after every individual commit
+```
 
 ---
 
 ## Phase 3 — Update design docs
 
-After all green commits, update in one doc commit:
+After all green commits, make one final documentation commit.
 
-design/resilience-review.md
-• L1 status → FIXED (OrderBook now uses configurable capacity)
-• Add snapshot version 3 migration note
-• Add satisfied invariants for R1–R7
+**For every finding that was fixed, update the file that owns the relevant fact:**
 
-design/components-core.md  +  design/components-codec.md
-• Update OrderBook, ChildOrderRegistry, SnapshotManager, AlgoSorAgent,
-SmartOrderRouter, ValidationEngine contracts with new signatures and
-env var defaults
+| If the fix touched...                         | Update this file                      |
+|-----------------------------------------------|---------------------------------------|
+| A component's constructor or invariants        | `design/components-core.md` or `design/components-codec.md` |
+| The snapshot wire format                       | `design/failover.md` snapshot format block |
+| A capacity constant or env var                 | `design/glossary.md`                  |
+| An architectural decision or trade-off         | `design/decisions.md`                 |
+| A resilience finding (new fix or new deferral) | `design/resilience-review.md`         |
+| A wire-format field offset or width            | `design/wire-formats.md`              |
 
-design/decisions.md
-• New entry: capacity constants are env-var-configurable; changing them
-post-deployment requires OMS_ARCHIVE_DELETE_ON_START=true once
+**For every finding that was intentionally deferred:**
+Add a dated entry to `design/resilience-review.md` with:
+- Finding ID and description
+- Reason for deferral
+- Conditions that would trigger re-evaluation
+- Status: DOCUMENTED (deferred)
 
-design/glossary.md
-• MAX_ORDERS: "65_536 default; overridden by OMS_MAX_ORDERS"
-• FRAGMENT_LIMIT: "10 default; overridden by OMS_ALGO_FRAGMENT_LIMIT"
-• Add: OMS_MAX_CHILDREN, OMS_INTENT_FRAGMENT_LIMIT, OMS_MAX_VENUES
+**Run the size/lint check before committing:**
 
-Run the size/lint check from design/INDEX.md before committing:
-for f in design/*.md; do n=$(wc -l < "$f"); \
-[ "$n" -gt 250 ] && echo "$f is $n lines — OVER LIMIT"; done
+```bash
+for f in design/*.md; do
+  n=$(wc -l < "$f")
+  [ "$n" -gt 250 ] && echo "OVER LIMIT: $f ($n lines)"
+done
+grep -rn "TODO\|FIXME\|TBD" design/   # expected: no output
+```
 
-Commit: "docs(design): update component contracts and decisions for configurable capacities"
+```
+Commit: "docs(design): update contracts, resilience review, and decisions for <audit-branch-name>"
+```
 
 ---
 
 ## Phase 4 — Final verification and merge
 
-1. ./gradlew test              — must be green, zero failures
-2. git log --oneline -12       — review all commits from this session
-3. git checkout master
-4. git merge --no-ff <branch> -m \
-   "feat: make all capacity limits configurable via env vars; snapshot v3"
-5. git log --oneline -3        — confirm merge commit is on master
+```bash
+# 1. All tests green
+./gradlew test
+
+# 2. Review all commits produced in this session
+git log --oneline -20
+
+# 3. Merge to master
+git checkout master
+git merge --no-ff <branch> -m \
+  "feat(audit): <one-line summary of all findings fixed>"
+
+# 4. Confirm merge commit is on master
+git log --oneline -3
+```
+
+---
+
+## Appendix A — Scan cheat-sheet
+
+Quick grep commands to run at the start of Phase 1 to surface candidates fast.
+These are starting points — the agent reads the matched files in full to
+classify correctly.
+
+```bash
+# Static capacity integers (S-type candidates)
+grep -rn "static final int\|static final long" \
+  --include="*.java" \
+  oms-codec/src oms-core/src algo-sor/src oms-launcher/src oms-config/src \
+  | grep -v "//.*static final"   # exclude commented-out lines
+
+# Bare new-array allocations (possible hot-path violations or fixed buffers)
+grep -rn "new byte\[\|new int\[\|new long\[" --include="*.java" .
+
+# Bare ByteBuffer.allocateDirect with a literal size
+grep -rn "allocateDirect([0-9]" --include="*.java" .
+
+# Agrona collections with literal initial capacity
+grep -rn "new Long2LongHashMap([0-9]\|new LongHashSet([0-9]" --include="*.java" .
+
+# Byte or short flyweight fields (W-type candidates — check for masking)
+grep -rn "getByte\|putByte\|getShort\|putShort" --include="*.java" .
+
+# Snapshot version
+grep -rn "SNAPSHOT_VERSION" --include="*.java" .
+
+# takeSnapshot method — check what is serialized
+grep -n "snapshot\|putBytes\|putInt\|putLong" \
+  oms-core/src/main/java/com/cobain/oms/cluster/SnapshotManager.java
+
+# OmsClusteredService.onStart — check post-restore steps
+grep -n "onStart\|republish\|recompute\|registerTransitions" \
+  oms-core/src/main/java/com/cobain/oms/cluster/OmsClusteredService.java
+
+# Archive directory default value
+grep -n "OMS_ARCHIVE_DIR\|/tmp\|user.home" \
+  oms-launcher/src/main/java/com/cobain/oms/launcher/OmsNode.java
+
+# Image handlers on Aeron subscriptions
+grep -rn "addSubscription\|availableImageHandler\|unavailableImageHandler" \
+  --include="*.java" oms-core/src oms-launcher/src
+
+# Verify algo-sor does not depend on oms-core
+./gradlew :algo-sor:dependencies --configuration compileClasspath | grep oms-core
+# Expected: no output
+```
+
+---
+
+## Appendix B — What good remediation output looks like
+
+A well-structured findings table entry looks like this:
+
+```
+FINDING S-01
+Type        : S
+Severity    : HIGH
+Location    : WidgetRegistry#MAX_WIDGETS (oms-core)
+Current     : static final int MAX_WIDGETS = 1_000
+Wall/Gap    : Registry fills at 1,000 simultaneous widgets; allocateSlot() returns
+              -1 silently; ops has no alert. Expected peak load is 2,000 widgets
+              by Q3 2026.
+Snapshot    : YES — MAX_SNAPSHOT_BYTES derived from MAX_WIDGETS
+Intentional : NO
+Remediation : Add OmsConfig.maxWidgets (env OMS_MAX_WIDGETS, default 1_000);
+              pass to WidgetRegistry constructor; bump SNAPSHOT_VERSION.
+```
+
+A well-structured commit message looks like this:
+
+```
+feat(widget-registry): make MAX_WIDGETS configurable via OMS_MAX_WIDGETS
+
+MAX_WIDGETS was a static compile-time constant. Under Q3 peak load projections
+(2,000 widgets) the registry fills and silently drops new allocations.
+
+- Add WidgetRegistry(int maxWidgets) constructor; no-arg delegates to MAX_WIDGETS
+- Add OmsConfig.KEY_MAX_WIDGETS / DEFAULT_MAX_WIDGETS (1_000)
+- Wire through OmsNode.loadOmsConfig() → OmsClusteredService constructor
+- SnapshotManager accepts maxWidgets; buffer sized at runtime
+- Bump SNAPSHOT_VERSION to N; add migration note to resilience-review.md
+```

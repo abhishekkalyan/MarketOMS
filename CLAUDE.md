@@ -334,7 +334,7 @@ Load the relevant SKILL.md before starting any matching task.
 
 | Task keywords | Skill to load |
 |---|---|
-| scaling, capacity, MAX_ORDERS, MAX_CHILDREN, fragment limit, snapshot size, configurable limit | `skills/scaling-audit/SKILL.md` |
+| scaling, capacity, hard-coded limit, throughput wall, configurable constant, snapshot gap, resilience, SPOF, data loss, recovery, failover audit | `skills/scaling-audit/SKILL.md` |
 
 
 ---
