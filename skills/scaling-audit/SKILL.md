@@ -20,12 +20,19 @@ description: >
 End-to-end agent workflow that discovers and remediates its own findings:
 
 ```
-Read design context → Scan codebase → Classify findings → Implement fixes
-→ Test → Update docs → Merge
+Read design context → Scan codebase → Classify findings → Present to user
+→ [USER APPROVES] → Implement fixes → Test → Update docs
+→ Present diff → [USER APPROVES] → Merge
 ```
 
 No findings are pre-seeded. The agent reads the codebase on every invocation
 and derives findings from what it actually finds.
+
+**Two mandatory confirmation gates:**
+- Gate 1 — after Phase 1: user reviews and approves the findings table
+  before any code is changed.
+- Gate 2 — after Phase 3: user reviews the full diff before anything
+  is merged to master.
 
 ---
 
@@ -168,8 +175,7 @@ must be bumped and a migration note added to `design/resilience-review.md`.
 
 ### 1c — Produce the findings table
 
-For every finding, produce one structured entry before moving to Phase 2.
-Do not proceed until the table is complete.
+For every finding, produce one structured entry.
 
 ```
 FINDING <id>
@@ -202,11 +208,51 @@ Remediation : <one-sentence proposed fix>
 
 ---
 
+### !! GATE 1 — Mandatory stop before any code changes !!
+
+After completing the findings table, STOP IMMEDIATELY.
+
+Present the complete findings table to the user, then output exactly this
+message:
+
+```
+─────────────────────────────────────────────────
+GATE 1 — Findings review
+
+X open finding(s) discovered (CRITICAL: N, HIGH: N, MEDIUM: N, LOW: N).
+
+Review the table above. Then reply with one of:
+
+  "proceed with all"
+      → implement every open finding
+
+  "proceed with <IDs>"
+      → implement only the listed finding IDs, e.g. "proceed with S-01, G-02"
+
+  "skip <IDs>, proceed with the rest"
+      → skip the listed IDs, implement everything else
+
+  "cancel"
+      → stop the audit; make no changes
+
+Intentional/deferred findings (marked Intentional: YES) are listed for
+visibility only and will not be implemented unless you explicitly include
+them in your reply.
+─────────────────────────────────────────────────
+```
+
+Do not write a single line of code, create any file, or run any command
+other than read-only checks until the user has replied to Gate 1.
+Do not interpret any message other than the approved forms above as
+permission to proceed.
+
+---
+
 ## Phase 2 — Implement remediations
 
-Process open findings in dependency order. A finding that affects the snapshot
-wire format must be grouped with its `SNAPSHOT_VERSION` bump into a single
-atomic commit.
+Process the approved findings only, in dependency order. A finding that
+affects the snapshot wire format must be grouped with its `SNAPSHOT_VERSION`
+bump into a single atomic commit.
 
 **For each finding (or logically related group of findings):**
 
@@ -301,14 +347,14 @@ After all green commits, make one final documentation commit.
 
 **For every finding that was fixed, update the file that owns the relevant fact:**
 
-| If the fix touched...                         | Update this file                      |
-|-----------------------------------------------|---------------------------------------|
+| If the fix touched...                          | Update this file                               |
+|------------------------------------------------|------------------------------------------------|
 | A component's constructor or invariants        | `design/components-core.md` or `design/components-codec.md` |
-| The snapshot wire format                       | `design/failover.md` snapshot format block |
-| A capacity constant or env var                 | `design/glossary.md`                  |
-| An architectural decision or trade-off         | `design/decisions.md`                 |
-| A resilience finding (new fix or new deferral) | `design/resilience-review.md`         |
-| A wire-format field offset or width            | `design/wire-formats.md`              |
+| The snapshot wire format                       | `design/failover.md` snapshot format block     |
+| A capacity constant or env var                 | `design/glossary.md`                           |
+| An architectural decision or trade-off         | `design/decisions.md`                          |
+| A resilience finding (new fix or new deferral) | `design/resilience-review.md`                  |
+| A wire-format field offset or width            | `design/wire-formats.md`                       |
 
 **For every finding that was intentionally deferred:**
 Add a dated entry to `design/resilience-review.md` with:
@@ -335,19 +381,61 @@ Commit: "docs(design): update contracts, resilience review, and decisions for <a
 
 ## Phase 4 — Final verification and merge
 
+### 4a — Run tests and prepare the diff
+
 ```bash
-# 1. All tests green
+# All tests must be green
 ./gradlew test
 
-# 2. Review all commits produced in this session
+# Review all commits produced in this session
 git log --oneline -20
 
-# 3. Merge to master
+# Produce the full diff against master for user review
+git diff master..HEAD
+```
+
+### !! GATE 2 — Mandatory stop before merge !!
+
+After running the commands above, STOP.
+
+Present to the user:
+1. The test result (pass / fail with failure count)
+2. The list of commits from `git log --oneline -20`
+3. The full output of `git diff master..HEAD`
+
+Then output exactly this message:
+
+```
+─────────────────────────────────────────────────
+GATE 2 — Pre-merge review
+
+All tests: PASSED / FAILED (see above)
+Commits on branch: N
+Files changed: N
+
+Review the diff and commit list above. Then reply with one of:
+
+  "merge"
+      → run the merge commit to master
+
+  "cancel"
+      → stop here; branch remains open, no merge performed
+
+Do not run the merge command until you have replied "merge".
+─────────────────────────────────────────────────
+```
+
+Do not run `git merge`, `git checkout master`, or any other destructive
+command until the user has replied "merge".
+
+### 4b — Merge (only after user replies "merge")
+
+```bash
 git checkout master
 git merge --no-ff <branch> -m \
   "feat(audit): <one-line summary of all findings fixed>"
 
-# 4. Confirm merge commit is on master
+# Confirm merge commit is on master
 git log --oneline -3
 ```
 
@@ -406,7 +494,7 @@ grep -rn "addSubscription\|availableImageHandler\|unavailableImageHandler" \
 
 ## Appendix B — What good remediation output looks like
 
-A well-structured findings table entry looks like this:
+A well-structured findings table entry:
 
 ```
 FINDING S-01
@@ -423,7 +511,7 @@ Remediation : Add OmsConfig.maxWidgets (env OMS_MAX_WIDGETS, default 1_000);
               pass to WidgetRegistry constructor; bump SNAPSHOT_VERSION.
 ```
 
-A well-structured commit message looks like this:
+A well-structured commit message:
 
 ```
 feat(widget-registry): make MAX_WIDGETS configurable via OMS_MAX_WIDGETS
