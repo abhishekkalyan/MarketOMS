@@ -41,9 +41,11 @@ public final class OmsLauncher {
         final String aeronDir = env("OMS_AERON_DIR", "/dev/shm/oms-aeron-launcher");
 
         // Capacity and tuning — resolved via OmsConfig (env vars + optional properties file).
-        final OmsConfig omsConfig       = loadOmsConfig();
+        final OmsConfig omsConfig         = loadOmsConfig();
         final int       algoFragmentLimit = omsConfig.algoFragmentLimit;
         final int       maxVenues         = omsConfig.maxVenues;
+        final int       maxIcebergOrders  = omsConfig.maxIcebergOrders;
+        final int       maxTwapOrders     = omsConfig.maxTwapOrders;
 
         log.info("Starting OmsLauncher — Aeron version: {}",
                  io.aeron.Aeron.class.getPackage().getImplementationVersion());
@@ -80,8 +82,8 @@ public final class OmsLauncher {
 
         // ── 4. Pre-allocate algo engines and SOR ───────────────────────────────
         final SmartOrderRouter  sor           = new SmartOrderRouter(maxVenues);
-        final IcebergAlgoEngine icebergEngine = new IcebergAlgoEngine(10L);
-        final TwapAlgoEngine    twapEngine    = new TwapAlgoEngine();
+        final IcebergAlgoEngine icebergEngine = new IcebergAlgoEngine(10L, maxIcebergOrders);
+        final TwapAlgoEngine    twapEngine    = new TwapAlgoEngine(maxTwapOrders);
 
         // ── 5. AlgoSorAgent + AgentRunner ─────────────────────────────────────
         final AlgoSorAgent algoSorAgent = new AlgoSorAgent(
