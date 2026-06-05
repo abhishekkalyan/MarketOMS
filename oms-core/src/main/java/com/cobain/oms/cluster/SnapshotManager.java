@@ -22,7 +22,7 @@ import org.agrona.concurrent.UnsafeBuffer;
  *  [12-15]  reserved          : int  = 0
  *  [16-19]  snapshotMaxOrders : int  — capacity this snapshot was taken with
  *  [20-23]  snapshotMaxChildren : int — capacity this snapshot was taken with
- *  [24 .. 24+orderCount*80]   parent order records (MESSAGE_SIZE each)
+ *  [24 .. 24+orderCount*128]  parent order records (MESSAGE_SIZE = 128 bytes each)
  *  [.. + dedupCount*16]       dedup entries (clOrdId:8 + orderId:8)
  *  [.. child registry: int childCount + childCount*128 bytes]
  */

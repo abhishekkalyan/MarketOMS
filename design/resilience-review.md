@@ -34,7 +34,9 @@ the same commit as this document.
   silently dropped. `ChildOrderRegistry` already had working `snapshot()` / `restore()` methods.
 - **Fix:** `SnapshotManager.takeSnapshot()` now accepts `ChildOrderRegistry` and appends child
   records after the dedup section. `loadSnapshot()` restores them in `handleSnapshotFragment()`.
-  `SNAPSHOT_VERSION` bumped to 2; `MAX_SNAPSHOT_BYTES` increased to ≈ 10.5 MB.
+  `SNAPSHOT_VERSION` is currently 3 (bumped once for this fix, then again for configurable
+  capacities); no static `MAX_SNAPSHOT_BYTES` constant exists — the buffer is computed
+  dynamically from `maxOrders` + `maxChildren` at construction (≈ 13.0 MB at defaults).
 - **Status:** FIXED
 
 **C2 — OMS_ARCHIVE_DIR defaults to /tmp**
