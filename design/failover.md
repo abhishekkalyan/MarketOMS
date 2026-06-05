@@ -28,11 +28,11 @@
 - `[12-15]` reserved : int = 0
 - `[16-19]` snapshotMaxOrders : int — `OMS_MAX_ORDERS` value at snapshot time
 - `[20-23]` snapshotMaxChildren : int — `OMS_MAX_CHILDREN` value at snapshot time
-- `[24 .. 24+orderCount×80]` parent order records (MESSAGE_SIZE = 80 bytes each)
+- `[24 .. 24+orderCount×128]` parent order records (MESSAGE_SIZE = 128 bytes each)
 - `[.. + dedupCount×16]` dedup entries (clOrdId:8 + orderId:8 = 16 bytes each)
 - `[.. + 4 + childCount×128]` child registry (self-describing: int count + BLOCK_LENGTH records)
 
-Buffer size = `24 + maxOrders×80 + maxOrders×16 + 4 + maxChildren×128` (computed at construction, ≈ 10.5 MB at defaults).
+Buffer size = `24 + maxOrders×128 + maxOrders×16 + 4 + maxChildren×128` (computed at construction, ≈ 13.0 MB at defaults).
 Restore validates `current OMS_MAX_ORDERS ≥ snapshotMaxOrders` and `current OMS_MAX_CHILDREN ≥ snapshotMaxChildren`.
 
 **Snapshot frequency:** Driven by a Raft timer in `OmsClusteredService` (`SNAPSHOT_TIMER_ID`, `SNAPSHOT_INTERVAL_NS = 5 minutes`). On each timer fire, `ClusterControl.ToggleState.SNAPSHOT.toggle()` is called, signalling ConsensusModule to take a snapshot. Limits log replay window to at most 5 minutes on recovery. Note: Aeron 1.47.0 `ConsensusModule.Context` has no `snapshotIntervalNs` API; the timer approach achieves equivalent behaviour.

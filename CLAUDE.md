@@ -141,7 +141,7 @@ Hard boundary: `algo-sor` must NOT depend on `oms-core`. Enforced by:
 
 **No Spring, no CDI, no reflection.** All wiring is explicit constructor injection in `OmsLauncher`.
 
-**Java 17.** `sealed` interfaces or `records` are permitted only where they introduce no hot-path allocation.
+**Java 21.** `sealed` interfaces or `records` are permitted only where they introduce no hot-path allocation.
 
 ---
 

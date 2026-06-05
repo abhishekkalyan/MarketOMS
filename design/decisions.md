@@ -34,8 +34,8 @@
    - Flat array is only faster for ≤ ~8 symbols (fits in a cache line)
    - Reversing: `permittedSymbols.contains()` must be replaced
 
-7. **`SnapshotManager` pre-allocates `MAX_SNAPSHOT_BYTES ≈ 9.4 MB` snapshot buffer**
-   - Worst-case: `16 + 65_536 × 128 + 65_536 × 16` bytes via `ByteBuffer.allocateDirect()`
+7. **`SnapshotManager` pre-allocates the snapshot buffer at construction ≈ 13.0 MB**
+   - Worst-case: `24 + 65_536 × 128 + 65_536 × 16 + 4 + 32_768 × 128` bytes via `ByteBuffer.allocateDirect()` (no static `MAX_SNAPSHOT_BYTES` constant — buffer is computed dynamically from `maxOrders` + `maxChildren` in the constructor)
    - Allocated once at class construction, not at snapshot time — eliminates GC pressure during failover
    - Reversing: `ByteBuffer.allocateDirect()` at snapshot time would stall the Raft commit thread
 

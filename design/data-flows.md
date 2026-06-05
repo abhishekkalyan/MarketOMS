@@ -10,9 +10,9 @@
 FIX Client (TCP)
        │ FIX tag=value ASCII
        ▼
-FIX Connectivity Engine (external)
-  • parses to FIX Binary (76 bytes)
-       │ Aeron IPC stream 11
+FIX Connectivity Engine (as Aeron Cluster client)
+  • sends ClusterMessageType-framed message (129 bytes)
+       │ Aeron Cluster ingress (UDP 9000) → Raft quorum commit
        ▼
 OmsClusteredService.onSessionMessage()
   ┌─────────────────────────────────────────────────────────┐

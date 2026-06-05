@@ -8,7 +8,7 @@
 
 | State | Byte Value | Applies To | Terminal? | Description |
 |-------|-----------|-----------|----------|-------------|
-| `PENDING_NEW` | 0 | parent, child | no | Order created in OMS, not yet confirmed by venue |
+| `PENDING_NEW` | 0 | child | no | Child order created, NOS dispatched to venue, awaiting EXEC_NEW |
 | `NEW` | 1 | parent, child | no | Venue confirmed order is live |
 | `PARTIALLY_FILLED` | 2 | parent, child | no | One or more partial fills received |
 | `PENDING_CANCEL` | 3 | parent, child | no | Cancel request sent, awaiting venue ack |
@@ -61,7 +61,7 @@ All other (state, event) combinations return `INVALID_TRANSITION (-1)`. Terminal
 
 ### 6.3 State invariants
 
-- **PENDING_NEW:** `filledQty == 0`, `leavesQty == qty`, order exists in `OrderBook`
+- **PENDING_NEW:** `filledQty == 0`, `leavesQty == qty`, order exists in `ChildOrderRegistry`
 - **NEW:** `filledQty == 0`, `leavesQty == qty`, `orderId` may still be `NULL_ID` until `EXEC_NEW` arrives
 - **ROUTING:** `childCount >= 1`, `leavesQty > 0`, `parentOrFirstChildId != 0`, transition was via `OrderStateMachine.transitionToRouting()` which requires prior state == `NEW`
 - **PARTIALLY_FILLED:** `filledQty > 0`, `leavesQty > 0`, `filledQty + leavesQty == qty`

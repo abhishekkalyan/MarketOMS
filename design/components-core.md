@@ -56,7 +56,7 @@ Components in this section own the stateful, Raft-replicated runtime of MarketOM
 **Zero-allocation contract:** All checks are primitive comparisons or `Long2LongHashMap.get()` / `LongHashSet.contains()` calls; result codes are `int` constants; no exceptions thrown
 **Inputs:** `validateNewOrder(OrderFlyweight)` on the hot path; `registerAccepted(long, long)` after every accepted order
 **Outputs:** `int` result code (`VALID = 0`, or `ERR_*` constants 1–8)
-**Invariants:** `seenClOrdIds.get(clOrdId) != DEDUP_MISSING` is the dedup check; `DEDUP_MISSING = Long.Min_Value`; validation order is cheapest-first (duplicate → side → TIF → qty → price → symbol → notional)
+**Invariants:** `seenClOrdIds.get(clOrdId) != DEDUP_MISSING` is the dedup check; `DEDUP_MISSING = Long.MIN_VALUE`; validation order is cheapest-first (duplicate → side → TIF → qty → price → symbol → notional)
 **Failure mode:** `reset()` clears `seenClOrdIds`; must be followed by `restoreEntry()` calls for each snapshot entry, or replayed orders pass the dedup check and create duplicates
 
 ---
@@ -95,7 +95,7 @@ Components in this section own the stateful, Raft-replicated runtime of MarketOM
 **Zero-allocation contract:** `snapshotBuffer` is a pre-allocated `UnsafeBuffer` backed by `ByteBuffer.allocateDirect()` in `SnapshotManager(int maxOrders, int maxChildren)` — no runtime allocation during snapshot/restore
 **Inputs:** `SnapshotManager(int maxOrders, int maxChildren)` (no-arg delegates to defaults); `takeSnapshot(...)`, `loadSnapshot(...)`
 **Outputs:** serialized snapshot offered to `snapshotPublication`; `OrderBook.restoreOrder()`, `ValidationEngine.restoreEntry()`, and `ChildOrderRegistry.restore()` called during load
-**Invariants:** `SNAPSHOT_VERSION = 3`; `HEADER_SIZE = 24`; `DEDUP_ENTRY_SIZE = 16`; buffer size = `24 + maxOrders×80 + maxOrders×16 + 4 + maxChildren×128`; header includes `snapshotMaxOrders` at [16] and `snapshotMaxChildren` at [20]; restore validates current capacity ≥ snapshot capacity
+**Invariants:** `SNAPSHOT_VERSION = 3`; `HEADER_SIZE = 24`; `DEDUP_ENTRY_SIZE = 16`; buffer size = `24 + maxOrders×128 + maxOrders×16 + 4 + maxChildren×128`; header includes `snapshotMaxOrders` at [16] and `snapshotMaxChildren` at [20]; restore validates current capacity ≥ snapshot capacity
 **Failure mode:** Version mismatch or capacity downsize throws `IllegalStateException` — wipe archive and restart with `OMS_ARCHIVE_DELETE_ON_START=true`
 
 ---

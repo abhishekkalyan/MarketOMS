@@ -5,7 +5,7 @@
 
 **Repository:** abhishekkalyan/MarketOMS
 **System type:** Sell-side Order Management System (OMS)
-**Language:** Java 17
+**Language:** Java 21
 **Build system:** Gradle 9.3 multi-module monorepo (`market-oms`)
 **Package root:** `com.cobain.oms`
 **Modules:** `oms-codec`, `oms-core`, `algo-sor`, `oms-launcher`, `oms-harness`

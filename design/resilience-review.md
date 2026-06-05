@@ -142,14 +142,14 @@ the same commit as this document.
 [12-15] reserved (int) = 0
 [16-19] snapshotMaxOrders (int)   — OMS_MAX_ORDERS at snapshot time
 [20-23] snapshotMaxChildren (int) — OMS_MAX_CHILDREN at snapshot time
-[24 .. 24+orderCount*80]          parent order records (MESSAGE_SIZE=80 bytes each)
+[24 .. 24+orderCount*128]          parent order records (MESSAGE_SIZE=128 bytes each)
 [.. + dedupCount*16]              dedup entries (clOrdId:8 + orderId:8)
 [.. + 4 + childCount*128]         child registry (self-describing: int count + records)
 ```
 
 Buffer size is computed at runtime in `SnapshotManager(int maxOrders, int maxChildren)`:
-`24 + maxOrders×80 + maxOrders×16 + 4 + maxChildren×128`
-At defaults: ≈ 10.5 MB.
+`24 + maxOrders×128 + maxOrders×16 + 4 + maxChildren×128`
+At defaults: ≈ 13.0 MB.
 
 **Migration from version 2:** version 2 snapshots are rejected at load time (`IllegalStateException`).
 Wipe the archive directory once: set `OMS_ARCHIVE_DELETE_ON_START=true` for one restart, then revert.

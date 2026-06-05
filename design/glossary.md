@@ -25,7 +25,7 @@
 | fixed-point price | Price stored as `long × PRICE_MULTIPLIER (10_000)` | `OrderLayout.PRICE_MULTIPLIER` |
 | PRICE_MULTIPLIER | `10_000L` — scale factor for fixed-point price encoding | `OrderLayout.PRICE_MULTIPLIER` |
 | NULL_ID | `Long.MIN_VALUE` — sentinel for unset order IDs | `OrderLayout.NULL_ID` |
-| MISSING | `Long.Min_Value` — sentinel for absent map entries | `ChildOrderRegistry` |
+| MISSING | `Long.MIN_VALUE` — sentinel for absent map entries | `ChildOrderRegistry` |
 | NO_SIBLING | `-1` — end-of-list sentinel in child linked list | `ChildOrderRegistry` |
 | BLOCK_LENGTH | 128 bytes — size of one order record | `OrderLayout.BLOCK_LENGTH` |
 | MESSAGE_SIZE | 128 bytes — alias for `BLOCK_LENGTH` | `OrderLayout.MESSAGE_SIZE` |
