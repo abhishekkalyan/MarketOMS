@@ -79,7 +79,7 @@ Components in this section own the stateful, Raft-replicated runtime of MarketOM
 **Class:** `com.cobain.oms.core.ChildOrderRegistry`
 **Module:** `oms-core`
 **Thread model:** single-threaded (Raft commit thread); two flyweights (`sharedFlyweight`, `secondFlyweight`) prevent clobbering when child and parent are accessed in the same cycle
-**Zero-allocation contract:** All state pre-allocated: `UnsafeBuffer` store (32,768 × 128 bytes = 4 MB), two `Long2LongHashMap` indexes, `int[]` free-slot stack, two `OrderFlyweight` instances
+**Zero-allocation contract:** All state pre-allocated: `UnsafeBuffer` store (`capacity × 128 bytes`), two `Long2LongHashMap` indexes pre-sized to `capacity × 2` at load factor 0.65f (no hot-path rehashing), `int[]` free-slot stack, two `OrderFlyweight` instances
 **Inputs:** `createChild(ChildOrderIntentFlyweight, OrderFlyweight, long childOrderId)`, `applyFillAndAggregate()`, `computeLiveChildQty()`, `cancelAllChildren()`
 **Outputs:** `createChild()` returns `sharedFlyweight` or null if full; `applyFillAndAggregate()` returns `secondFlyweight` (parent) or null if child not found
 **Invariants:** `DEFAULT_CAPACITY = 32_768`; `MISSING = Long.MIN_VALUE`; `NO_SIBLING = -1`; child linked list: `parent.parentOrFirstChildId()` = first child orderId; `child.nextSiblingSlot()` = next sibling slot or -1; child clOrdId formula: `parentOrderId * 10_000L + (sliceIndex & 0xFF)`
@@ -140,7 +140,7 @@ never reference `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`.
 **Module:** `algo-sor`
 **Thread model:** single-threaded `AgentRunner` (dedicated OS thread via `AgentRunner.startOnThread()`); `doWork()` is the duty cycle
 **Zero-allocation contract:** `payloadBuffer` (zero-length `UnsafeBuffer` re-wrapped on each fragment — no allocation), `parentView` (pre-allocated flyweight), `intentOfferBuffer` (`HEADER_LENGTH + BLOCK_LENGTH = 64` bytes pre-allocated); header bytes written once at construction
-**Constructor:** `AlgoSorAgent(parentOrderSub, intentPub, icebergEngine, twapEngine, sor, fragmentLimit, maxVenues)` — capacity values resolved by `OmsLauncher.loadOmsConfig()` via `OmsConfig`; env vars `OMS_ALGO_FRAGMENT_LIMIT` (default 10) and `OMS_MAX_VENUES` (default 10) remain the primary source names
+**Constructor:** `AlgoSorAgent(parentOrderSub, intentPub, icebergEngine, twapEngine, sor, fragmentLimit, maxVenues)` — capacity values resolved by `OmsLauncher.loadOmsConfig()` via `OmsConfig`; env vars `OMS_ALGO_FRAGMENT_LIMIT` (default 10), `OMS_MAX_VENUES` (default 10), `OMS_MAX_ICEBERG_ORDERS` (default 4_096), `OMS_MAX_TWAP_ORDERS` (default 512) are the primary source names
 **Inputs:** `doWork()` polls `parentOrderSub` (stream 30) with `fragmentLimit` fragments per cycle (instance field, not static)
 **Outputs:** `intentPub.offer()` on stream 12 via `publishIntent()`; spins with `Thread.onSpinWait()` on back-pressure — never sleeps
 **Invariants:** `fragmentLimit` is an instance field (default 10 via `OMS_ALGO_FRAGMENT_LIMIT`); venue arrays (`venueIds`, `venuePrices`, `venueQtys`) pre-allocated at `maxVenues` in constructor; publishes ONLY `CHILD_ORDER_INTENT (40)` messages; never calls `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`; `SmartOrderRouter` reuses a single pre-allocated `intent` flyweight per `route()` call
@@ -156,6 +156,30 @@ never reference `ChildOrderRegistry`, `OrderBook`, or `FIXMessageEncoder`.
 **Zero-allocation contract:** Single `ChildOrderIntentFlyweight intent` pre-allocated via `ChildOrderIntentFlyweight.allocate()` in constructor; all arithmetic in longs; `sink.onIntent(intent)` is called with the same `intent` instance for every slice
 **Inputs:** `route(OrderFlyweight, int[], long[], long[], int, ChildIntentSink)` called from `AlgoSorAgent.onFragment()`
 **Outputs:** calls `sink.onIntent(intent)` once per venue slice; returns count of intents published
-**Constructor:** `SmartOrderRouter(int maxVenues)` — `OmsLauncher` reads `OMS_MAX_VENUES` (default 10); no-arg delegates to `MAX_VENUES` default
+**Constructor:** `SmartOrderRouter(int maxVenues)` — `OmsLauncher` reads `OMS_MAX_VENUES` (default 10) from `OmsConfig`; no-arg delegates to `MAX_VENUES` default
 **Invariants:** `maxVenues` is an instance field (default `MAX_VENUES = 10`); if no venue matches, routes entire qty to venue ID 1 at `parent.price()`; `intent` is reused — callers must copy before calling `onIntent()` returns
 **Failure mode:** `sink.onIntent(intent)` retaining the reference beyond the call boundary reads stale data from the next slice; venue ID 0 is skipped (treated as inactive)
+
+---
+
+#### IcebergAlgoEngine
+
+**Class:** `com.cobain.oms.algo.IcebergAlgoEngine`
+**Module:** `algo-sor`
+**Thread model:** single-threaded `AlgoSorAgent`
+**Zero-allocation contract:** `remainingQty` and `peakQty` are `Long2LongHashMap` instances pre-sized to `maxConcurrent × 2` at load factor 0.65f in the constructor — no rehash on the hot path. One `ChildOrderIntentFlyweight intent` pre-allocated via `ChildOrderIntentFlyweight.allocate()`.
+**Constructor:** `IcebergAlgoEngine(long peakFraction, int maxConcurrent)` — `OmsLauncher` passes `peakFraction=10` and reads `OMS_MAX_ICEBERG_ORDERS` (default 4_096) from `OmsConfig`; 1-arg constructor delegates to `maxConcurrent=4_096`.
+**Invariants:** `MAX_SLICES_PER_PARENT = 256` — enforced by guard in `onSlice()`; sliceIndex is a byte (0-255) so the clOrdId formula `parentOrderId × 10_000 + (sliceIndex & 0xFF)` supports at most 256 children per parent. At default `peakFraction=10`, at most ~10 slices are dispatched per parent.
+**Failure mode:** If `dispatched ≥ MAX_SLICES_PER_PARENT`, remaining qty is not dispatched and WARN is logged — the parent order stalls; increase `peakFraction` or reduce order qty to avoid this.
+
+---
+
+#### TwapAlgoEngine
+
+**Class:** `com.cobain.oms.algo.TwapAlgoEngine`
+**Module:** `algo-sor`
+**Thread model:** single-threaded `AlgoSorAgent`
+**Zero-allocation contract:** All per-handle arrays (`parentOrderId`, `sliceQty`, `slicesFired`, etc.) pre-allocated at `maxTwapOrders` in the constructor; `freeHandles` free-stack for O(1) alloc/free; one pre-allocated `ChildOrderIntentFlyweight intent`.
+**Constructor:** `TwapAlgoEngine(int maxTwapOrders)` — `OmsLauncher` reads `OMS_MAX_TWAP_ORDERS` (default 512) from `OmsConfig`; no-arg constructor delegates to `MAX_TWAP_ORDERS = 512`.
+**Invariants:** `maxTwapOrders` is an instance field; `DEFAULT_SLICES = 12`; `DEFAULT_INTERVAL_MS = 5 min`; when all handles are occupied `acquireHandle()` returns -1 and `onSlice()` falls back to single-slice dispatch with a WARN log.
+**Failure mode:** Fallback to single-slice on capacity exhaustion is silent except for the WARN log — TWAP schedule is abandoned; raise `OMS_MAX_TWAP_ORDERS` if the WARN fires in production.

@@ -47,6 +47,9 @@
 9. **`childClOrdId = parentOrderId * 10_000L + (sliceIndex & 0xFF)`**
    - Globally unique, self-describing (divide by 10_000 = parentOrderId)
    - FIX-safe (fits in a long); survives roundtrip through FIX connectivity layer
+   - **Hard limit: max 256 unique children per parent order** (sliceIndex is a byte; wrapping causes clOrdId collision in `ChildOrderRegistry.clOrdIdToOrderId`)
+   - Current defaults are safe: TWAP dispatches at most `DEFAULT_SLICES = 12` slices; Iceberg with `peakFraction = 10` dispatches ~10 slices
+   - `IcebergAlgoEngine.onSlice()` enforces this with a WARN + break at `MAX_SLICES_PER_PARENT = 256`
    - Reversing: `ChildOrderRegistry.clOrdIdToOrderId` key collision possible if formula changes
 
 10. **`AlgoSorAgent.FRAGMENT_LIMIT = 10`**
@@ -92,6 +95,8 @@ All per-process capacity limits are now env-var-configurable with defaults that 
 | `OMS_INTENT_FRAGMENT_LIMIT` | 20 | `OmsClusteredService` |
 | `OMS_ALGO_FRAGMENT_LIMIT` | 10 | `AlgoSorAgent` |
 | `OMS_MAX_VENUES` | 10 | `SmartOrderRouter` / `AlgoSorAgent` |
+| `OMS_MAX_ICEBERG_ORDERS` | 4_096 | `IcebergAlgoEngine` |
+| `OMS_MAX_TWAP_ORDERS` | 512 | `TwapAlgoEngine` |
 
 **Constraint:** Changing `OMS_MAX_ORDERS` or `OMS_MAX_CHILDREN` after a snapshot has been taken requires wiping the archive once (`OMS_ARCHIVE_DELETE_ON_START=true` for one restart, then revert to `false`). The snapshot version 3 header embeds the capacity values the snapshot was taken with; restore fails with a clear error if current capacity is smaller than the snapshot capacity.
 

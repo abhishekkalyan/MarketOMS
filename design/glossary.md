@@ -55,3 +55,5 @@
 | LatencyHistogram | Zero-allocation `long[]`-backed histogram for nanosecond latency recording; `record()` is allocation-free; `print()` allocates for formatting only | `com.cobain.oms.harness.perf.LatencyHistogram` |
 | PerfHarnessLauncher | Entry point for the performance test harness; runs all six benchmarks in sequence and prints the consolidated results table | `com.cobain.oms.harness.perf.PerfHarnessLauncher` |
 | PERF_SAMPLE_COUNT | Env var: number of orders to send in the latency measurement phase; default 100 000 | `PerfConfig.DEFAULT_SAMPLE_COUNT` |
+| OMS_MAX_ICEBERG_ORDERS | Env var: default 4_096 — max concurrent `IcebergAlgoEngine` orders whose state is tracked in `remainingQty`/`peakQty` maps; maps pre-sized to this × 2 at 0.65f to eliminate hot-path rehashing | `OmsLauncher`, `IcebergAlgoEngine` |
+| OMS_MAX_TWAP_ORDERS | Env var: default 512 — max concurrent TWAP handles in `TwapAlgoEngine`; all per-handle arrays pre-allocated at this size; when exhausted, `onSlice()` falls back to single-slice and logs WARN | `OmsLauncher`, `TwapAlgoEngine.MAX_TWAP_ORDERS` |
