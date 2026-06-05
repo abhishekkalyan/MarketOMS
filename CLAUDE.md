@@ -329,7 +329,7 @@ Omitting `jdk.internal.misc` causes `IllegalAccessError` from `UnsafeApi` at sta
 
 ## Skills
 
-All reusable agent workflows live in `skills/` at the repo root.
+All reusable agent workflows live in `skills/workflows/` at the repo root.
 When a task matches a description below, read the listed file in full
 and follow the workflow it describes before doing any other work.
 
@@ -337,20 +337,20 @@ and follow the workflow it describes before doing any other work.
 When asked about scaling, capacity, hard-coded limits, throughput walls,
 configurable constants, snapshot gaps, resilience, SPOF, data loss,
 recovery, or failover — read the file
-`skills/scaling-audit/SKILL.md` in full and follow the workflow it
-describes from Step 0 through Phase 4.
+`skills/workflows/scaling-audit/SKILL.md` in full and follow the workflow
+it describes from Step 0 through Phase 4.
 
 **Functional specification generation**
 When asked to generate a functional specification, functional requirements
 document, or a spec derived from the codebase — read the file
-`skills/spec-generator/SKILL.md` in full and follow the workflow it
-describes from Step 0 through Step 4.
+`skills/workflows/spec-generator/SKILL.md` in full and follow the workflow
+it describes from Step 0 through Step 4.
 
 **Design doc sync**
 When asked to sync design docs to source, update design docs from code,
 fix stale design documentation, or bring design docs up to date — read
-the file `skills/design-sync/SKILL.md` in full and follow the workflow
-it describes from Step 0 through Step 7.
+the file `skills/workflows/design-sync/SKILL.md` in full and follow
+the workflow it describes from Step 0 through Step 7.
 
 
 ---
